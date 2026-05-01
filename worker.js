@@ -458,7 +458,6 @@ Principios:
         {
           role: "user",
           content:
-            content:
   "Resumen estructurado del viaje:\n" +
   JSON.stringify(tripSummary) +
   "\n\nLínea de tiempo cronológica del viaje:\n" +
