@@ -486,10 +486,10 @@ if (url.pathname === "/admin/logs") {
         <th>Intent</th>
         <th>Scope</th>
         <th>City</th>
+        <th>Thinking</th>
         <th>Tokens aprox</th>
         <th>Pregunta</th>
         <th>Respuesta</th>
-        <th>Thinking</th>
       </tr>
     </thead>
     <tbody>
