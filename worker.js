@@ -170,6 +170,71 @@ export default {
       return new Response("Yompr Concierge funcionando 🚀");
     }
 
+if (url.pathname === "/admin/logs") {
+  const password = url.searchParams.get("key");
+
+  if (password !== "12345") {
+    return new Response("No autorizado", { status: 401 });
+  }
+
+  const list = await env.CHAT_LOGS.list({ limit: 50 });
+  const logs = [];
+
+  for (const key of list.keys) {
+    const value = await env.CHAT_LOGS.get(key.name);
+    if (value) {
+      logs.push(JSON.parse(value));
+    }
+  }
+
+  logs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+  const rows = logs.map(log => `
+    <tr>
+      <td>${log.created_at || ""}</td>
+      <td>${log.trip_id || ""}</td>
+      <td>${log.intent || ""}</td>
+      <td>${log.scope || ""}</td>
+      <td>${log.city || ""}</td>
+      <td>${log.approximate_context_tokens || ""}</td>
+      <td>${log.question || ""}</td>
+      <td>${log.answer || ""}</td>
+    </tr>
+  `).join("");
+
+  return new Response(`
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Yompr Concierge Logs</title>
+</head>
+<body style="font-family: Arial; padding: 24px;">
+  <h1>Yompr Concierge Logs</h1>
+  <p>Últimas 50 preguntas registradas.</p>
+
+  <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; font-size: 13px;">
+    <thead>
+      <tr>
+        <th>Fecha</th>
+        <th>Trip ID</th>
+        <th>Intent</th>
+        <th>Scope</th>
+        <th>City</th>
+        <th>Tokens aprox</th>
+        <th>Pregunta</th>
+        <th>Respuesta</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rows}
+    </tbody>
+  </table>
+</body>
+</html>
+  `, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
+}
+    
     if (url.pathname === "/admin") {
       const password = url.searchParams.get("key");
 
