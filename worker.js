@@ -1819,178 +1819,21 @@ Si se incluye transport_info:
 - Si utilizas información de transport_info, menciona explícitamente que es un tiempo estimado calculado. 
               `
               },
+
+  ...conversationHistory.slice(-8),
+              
               {
                 role: "user",
                 content:
                  "Intención detectada: " + intent +
 "\\nZona horaria del cliente: " + (timeZone || "desconocida") +
 "\\nFecha local del cliente: " + (localDate || "desconocida") +
-"\\n\\nContexto del viaje:\\n" +
+"\\n\\nContexto actualizado del viaje:\\n" +
 JSON.stringify(context) +
-"\\n\\nPregunta del cliente:\\n" +
+"\\n\\nPregunta actual del cliente:\\n" +
 question
               }
             ]
-          })
-        });
-
-        const data = await response.json();
-
-        if (!response.ok) {
-          return Response.json({
-            answer: "Error de DeepSeek: " + JSON.stringify(data)
-          }, { status: 500 });
-        }
-
-       const answer = data.choices?.[0]?.message?.content || "No pude responder.";
-
-const contextText = JSON.stringify(context);
-const approximateTokens = Math.ceil(contextText.length / 4);
-
-const logId = tripId + "-" + Date.now();
-
-await env.CHAT_LOGS.put(logId, JSON.stringify({
-  created_at: new Date().toISOString(),
-  trip_id: tripId,
-  question: question,
-  intent: intent,
-  scope: analysis.scope || "all",
-  city: analysis.city || null,
-  answer: answer,
-  context_characters: contextText.length,
-  approximate_context_tokens: approximateTokens,
-  analysis_thinking_enabled: true,
-  thinking_enabled: needsThinking,
-  transport_used: transportUsed,
-  transport_duration_min: transportInfo?.duration_min || null,
-  transport_distance_km: transportInfo?.distance_km || null,
-  transport_origin: transportInfo?.origin || null,
-  transport_destination: transportInfo?.destination || null,
-  transport_error: transportError,
-  used_transport_in_answer: answer.includes("traslado estimado")
-}));
-
-return Response.json({ answer, intent });
-      } catch (e) {
-        return Response.json({
-          answer: "Error al procesar la pregunta: " + String(e)
-        }, { status: 500 });
-      }
-    }
-
-    if (url.pathname.startsWith("/v/")) {
-      const tripId = decodeURIComponent(url.pathname.replace("/v/", ""));
-      const tripText = await env.TRIPS.get(tripId);
-
-      if (!tripText) {
-        return new Response("No encontré este viaje.", { status: 404 });
-      }
-
-      const tripJson = JSON.parse(tripText);
-      const trip = tripJson.trip || {};
-      const flights = tripJson.flightReservations || [];
-      const hotels = tripJson.hotelVouchers || [];
-      const services = tripJson.serviceBookings || [];
-
-      return new Response(`
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8" />
-  <title>${trip.name || "Yompr Concierge"}</title>
-</head>
-<body style="font-family: Arial; padding: 24px;">
-  <h1>${trip.name || "Yompr Concierge"}</h1>
-  <p><b>Destino:</b> ${trip.destination || ""}</p>
-
-  <h2>Vuelos</h2>
-  <p>${flights.length} reservación(es) de vuelo</p>
-
-  <h2>Hospedaje</h2>
-  <p>${hotels.length} voucher(s) de hospedaje</p>
-
-  <h2>Servicios / Actividades</h2>
-  <p>${services.length} servicio(s)</p>
-
-  <hr>
-
-  <h2>Pregúntale a tu concierge</h2>
-  <input id="question" style="width: 70%;" placeholder="Ej: ¿a qué hora sale mi vuelo?" />
-  <button onclick="ask()">Preguntar</button>
-  <div id="answer" style="margin-top:20px; white-space:pre-wrap;"></div>
-
-  <script>
-let conversationHistory = [];
-  
-    async function ask() {
-  const question = document.getElementById("question").value;
-  const answerBox = document.getElementById("answer");
-
-  if (!question) {
-    answerBox.innerText = "Escribe una pregunta primero.";
-    return;
-  }
-
-  answerBox.innerText = "Pensando...";
-
-  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-
-  const localDate = new Date().toLocaleDateString("en-CA", {
-  timeZone: timeZone
-});
-
-  try {
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-body: JSON.stringify({
-  tripId: "${tripId}",
-  question: question,
-  timeZone: timeZone,
-  localDate: localDate,
-  conversationHistory: conversationHistory
-})
-    });
-
-    const data = await res.json();
-
-    if (!res.ok) {
-      answerBox.innerText = "Error: " + (data.answer || data.message || JSON.stringify(data));
-      return;
-    }
-
-const answer = data.answer || "No recibí respuesta.";
-answerBox.innerText = answer;
-
-conversationHistory.push({
-  role: "user",
-  content: question
-});
-
-conversationHistory.push({
-  role: "assistant",
-  content: answer
-});
-
-conversationHistory = conversationHistory.slice(-8); 
-  
-  } catch (error) {
-    answerBox.innerText = "Error de conexión: " + error.message;
-  }
-}
-  </script>
-
-  <hr>
-  <p>Yompr Personal Concierge — primera versión funcionando.</p>
-</body>
-</html>
-      `, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
-    }
-
-    return new Response("Ruta no encontrada", { status: 404 });
-  }
-};
-
           })
         });
 
