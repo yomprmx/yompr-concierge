@@ -93,6 +93,7 @@ function postProcessAnalysis(question, analysis) {
     analysis.tool_needed = "route";
     analysis.needs_clarification = false;
     analysis.clarification_question = null;
+    analysis.route_mode = inferRouteModeFromQuestion(question);
 
     if (!analysis.city) {
       analysis.city = inferCityFromQuestion(question);
@@ -142,8 +143,17 @@ async function geocode(address) {
   };
 }
 
-async function getRoute(from, to) {
-  const url = `https://router.project-osrm.org/route/v1/driving/${from.lon},${from.lat};${to.lon},${to.lat}?overview=false`;
+async function getRoute(from, to, mode = "driving") {
+  const profileMap = {
+    driving: "driving",
+    walking: "foot"
+  };
+
+  const profile = profileMap[mode] || "driving";
+
+  const url =
+    `https://router.project-osrm.org/route/v1/${profile}/` +
+    `${from.lon},${from.lat};${to.lon},${to.lat}?overview=false`;
 
   const res = await fetch(url);
   const data = await res.json();
@@ -153,13 +163,58 @@ async function getRoute(from, to) {
   const route = data.routes[0];
 
   return {
+    mode,
     distance_km: route.distance / 1000,
     duration_min: route.duration / 60
   };
 }
 
-function buildGoogleMapsLink(origin, destination) {
-  return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(destination)}`;
+function buildGoogleMapsLink(origin, destination, mode = null) {
+  let url =
+    `https://www.google.com/maps/dir/?api=1` +
+    `&origin=${encodeURIComponent(origin)}` +
+    `&destination=${encodeURIComponent(destination)}`;
+
+  if (mode) {
+    url += `&travelmode=${encodeURIComponent(mode)}`;
+  }
+
+  return url;
+}
+
+function inferRouteModeFromQuestion(question) {
+  const q = normalizeText(question);
+
+  if (
+    q.includes("a pie") ||
+    q.includes("caminando") ||
+    q.includes("caminar") ||
+    q.includes("andando")
+  ) {
+    return "walking";
+  }
+
+  if (
+    q.includes("taxi") ||
+    q.includes("uber") ||
+    q.includes("coche") ||
+    q.includes("auto") ||
+    q.includes("carro")
+  ) {
+    return "driving";
+  }
+
+  if (
+    q.includes("transporte publico") ||
+    q.includes("metro") ||
+    q.includes("tren") ||
+    q.includes("bus") ||
+    q.includes("autobus")
+  ) {
+    return "transit";
+  }
+
+  return "all";
 }
 
 async function enrichWithTransportInfo(tripJson, analysis) {
@@ -169,70 +224,127 @@ async function enrichWithTransportInfo(tripJson, analysis) {
 
   const city = normalizeText(analysis.city || "");
   const routeDirection = analysis.route_direction || "unknown";
-
-  if (!city) return null;
+  const requestedMode = analysis.route_mode || "all";
 
   const hotels = tripJson.hotelVouchers || [];
   const allSegments = (tripJson.flightReservations || []).flatMap(r => r.segments || []);
 
-  const hotel = hotels.find(h =>
-    normalizeText(JSON.stringify(h)).includes(city)
-  );
+  let hotel = null;
+
+if (routeDirection === "hotel_to_place" && analysis.place_name) {
+  origin = hotel.accommodationAddress;
+  destination = analysis.place_name;
+}
+  
+  if (city) {
+    hotel = hotels.find(h =>
+      normalizeText(JSON.stringify(h)).includes(city)
+    );
+  }
+
+  if (!hotel && hotels.length === 1) {
+    hotel = hotels[0];
+  }
 
   if (!hotel?.accommodationAddress) return null;
 
   let airportCode = analysis.airport_code || airportCodeForCity(analysis.city);
+  let origin = null;
+  let destination = null;
 
-  if (!airportCode) return null;
-
-  let segment = null;
+  
+if (routeDirection === "place_to_hotel" && analysis.place_name) {
+  origin = analysis.place_name;
+  destination = hotel.accommodationAddress;
+}
 
   if (routeDirection === "airport_to_hotel") {
-    segment = allSegments.find(s => s.arrivalAirport === airportCode);
+    if (!airportCode) return null;
+
+    const segment = allSegments.find(s => s.arrivalAirport === airportCode);
     airportCode = segment?.arrivalAirport || airportCode;
-  } else if (routeDirection === "hotel_to_airport") {
-    segment = allSegments.find(s => s.departureAirport === airportCode);
-    airportCode = segment?.departureAirport || airportCode;
-  } else {
-    segment = allSegments.find(s =>
-      s.arrivalAirport === airportCode || s.departureAirport === airportCode
-    );
+
+    origin = airportLabelForCode(airportCode);
+    destination = hotel.accommodationAddress;
   }
 
-  const hotelAddress = hotel.accommodationAddress;
-  const airportAddress = airportLabelForCode(airportCode);
+  if (routeDirection === "hotel_to_airport") {
+    if (!airportCode) return null;
 
-  let origin = hotelAddress;
-  let destination = airportAddress;
+    const segment = allSegments.find(s => s.departureAirport === airportCode);
+    airportCode = segment?.departureAirport || airportCode;
 
-  if (routeDirection === "airport_to_hotel") {
-    origin = airportAddress;
-    destination = hotelAddress;
-  } else if (routeDirection === "hotel_to_airport") {
-    origin = hotelAddress;
-    destination = airportAddress;
-  } else {
+    origin = hotel.accommodationAddress;
+    destination = airportLabelForCode(airportCode);
+  }
+
+  if (!origin || !destination) {
     return null;
   }
 
   const originCoords = await geocode(origin);
   const destinationCoords = await geocode(destination);
 
-  if (!originCoords || !destinationCoords) return null;
+  if (!originCoords || !destinationCoords) {
+    return null;
+  }
 
-  const route = await getRoute(originCoords, destinationCoords);
+  const walkingRoute = await getRoute(originCoords, destinationCoords, "walking");
+  const drivingRoute = await getRoute(originCoords, destinationCoords, "driving");
 
-  if (!route) return null;
+  const options = {
+    walking: walkingRoute
+      ? {
+          mode: "walking",
+          duration_min: Math.round(walkingRoute.duration_min),
+          distance_km: Math.round(walkingRoute.distance_km * 10) / 10,
+          maps_link: buildGoogleMapsLink(origin, destination, "walking")
+        }
+      : null,
+
+    driving: drivingRoute
+      ? {
+          mode: "driving",
+          duration_min: Math.round(drivingRoute.duration_min),
+          distance_km: Math.round(drivingRoute.distance_km * 10) / 10,
+          maps_link: buildGoogleMapsLink(origin, destination, "driving")
+        }
+      : null,
+
+    transit: {
+      mode: "transit",
+      duration_min: null,
+      distance_km: null,
+      maps_link: buildGoogleMapsLink(origin, destination, "transit"),
+      note: "El transporte público requiere horarios y rutas en tiempo real; confirma el tiempo exacto en Google Maps."
+    }
+  };
+
+  let primary = null;
+
+  if (requestedMode === "walking") {
+    primary = options.walking;
+  } else if (requestedMode === "driving") {
+    primary = options.driving;
+  } else if (requestedMode === "transit") {
+    primary = options.transit;
+  } else {
+    primary = options.walking || options.driving || options.transit;
+  }
 
   return {
     city: analysis.city || null,
     route_direction: routeDirection,
+    route_mode: requestedMode,
     origin,
     destination,
-    airport_code: airportCode,
-    duration_min: Math.round(route.duration_min),
-    distance_km: Math.round(route.distance_km),
-    maps_link: buildGoogleMapsLink(origin, destination)
+    airport_code: airportCode || null,
+
+    duration_min: primary?.duration_min || null,
+    distance_km: primary?.distance_km || null,
+    maps_link: primary?.maps_link || buildGoogleMapsLink(origin, destination),
+
+    options
   };
 }
 
@@ -368,16 +480,22 @@ function detectBasicConflicts(tripJson) {
 }
 
 function detectIntentLocal(question) {
-  const q = question.toLowerCase();
+  const q = normalizeText(question);
 
   if (
     q.includes("aeropuerto") ||
-    q.includes("qué tan lejos") ||
     q.includes("que tan lejos") ||
-    q.includes("cómo llego") ||
+    q.includes("qué tan lejos") ||
     q.includes("como llego") ||
+    q.includes("cómo llego") ||
     q.includes("ruta") ||
-    q.includes("traslado")
+    q.includes("traslado") ||
+    q.includes("cerca") ||
+    q.includes("estacion") ||
+    q.includes("estación") ||
+    q.includes("terminal") ||
+    q.includes("metro") ||
+    q.includes("tren")
   ) {
     return "unknown";
   }
@@ -425,11 +543,12 @@ Responde SOLO JSON válido con este formato:
   "city": "nombre de ciudad si aplica, si no null",
   "date_reference": "hoy | mañana | fecha específica | null",
   "tool_needed": "none | route | places | weather",
-  "route_direction": "airport_to_hotel | hotel_to_airport | hotel_to_place | unknown",
+  "route_direction": "airport_to_hotel | hotel_to_airport | hotel_to_place | place_to_hotel | unknown",
   "airport_code": "código IATA si aplica, si no null",
   "confidence": 0-1,
   "needs_clarification": true/false,
-  "clarification_question": "pregunta corta si hace falta aclarar"
+  "clarification_question": "pregunta corta si hace falta aclarar",
+  "place_name": "nombre del lugar si aplica, si no null"
 }
 
 Reglas:
@@ -445,6 +564,9 @@ Reglas:
 - Si el usuario dice "cuando llego", interpreta que quiere la ruta desde el aeropuerto de llegada hacia el hotel.
 - Si el usuario dice "cuando salgo", "regreso" o "para mi vuelo", interpreta que quiere la ruta desde el hotel hacia el aeropuerto de salida.
 - Si no estás seguro pero la ciudad está clara, usa intent="route", tool_needed="route" y route_direction según la mejor inferencia.
+- Si el usuario pregunta por distancia o ruta entre el hotel y una estación, museo, restaurante, punto de interés o lugar mencionado, llena place_name con ese lugar.
+- Si pregunta si un lugar está cerca del hotel, usa route_direction="place_to_hotel" o "hotel_to_place" según corresponda.
+- No limites place_name a ciudades específicas.
 `
         },
         {
@@ -944,11 +1066,14 @@ Estilo:
 - Si detectas emergencia o problema serio, recomienda contactar a Rigo.
 
 Si se incluye transport_info:
-- Úsalo para calcular tiempos reales.
-- Menciona duración estimada del traslado.
-- Sugiere hora de salida considerando el vuelo.
-- Incluye el link de Google Maps si es útil.
-- Si utilizas información de transport_info, menciona explícitamente que es un tiempo estimado calculado.
+- Usa transport_info como fuente principal para distancias y tiempos.
+- Si transport_info.options existe, puedes comparar caminando, taxi/coche y transporte público.
+- Para caminatas, usa solo transport_info.options.walking.
+- Para taxi/coche, usa solo transport_info.options.driving.
+- Para transporte público, si duration_min es null, NO inventes duración: di que debe confirmarse en el link de Google Maps por horarios en tiempo real.
+- No digas que algo queda a 5 minutos caminando si transport_info.options.walking indica otro tiempo.
+- Si el usuario pregunta “está cerca”, responde con la distancia y duración caminando cuando estén disponibles.
+- Si no hay transport_info, no inventes tiempos de ruta.
 `
               },
               ...cleanHistory,
