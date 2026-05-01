@@ -109,11 +109,28 @@ function normalizeText(value) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
-function resolveDateReference(analysis, tripJson) {
+function getTodayInTimezone(timeZone = "UTC") {
+  const now = new Date();
+
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(now);
+
+  const year = parts.find(p => p.type === "year").value;
+  const month = parts.find(p => p.type === "month").value;
+  const day = parts.find(p => p.type === "day").value;
+
+  return new Date(`${year}-${month}-${day}T00:00:00`);
+}
+
+function resolveDateReference(analysis, tripJson, timeZone) {
   const ref = (analysis.date_reference || "").toLowerCase();
 
-  const startDate = new Date(tripJson.trip?.startDate || Date.now());
-
+const startDate = getTodayInTimezone(timeZone || "UTC");
+ 
   if (ref === "hoy") {
     return startDate;
   }
@@ -127,7 +144,7 @@ function resolveDateReference(analysis, tripJson) {
   return null;
 }
 
-function buildContextByIntent(tripJson, analysis) {
+function buildContextByIntent(tripJson, analysis, timeZone) {
   const intent = analysis.intent || "general";
   const scope = analysis.scope || "all";
   const city = normalizeText(analysis.city || "");
@@ -137,7 +154,7 @@ function buildContextByIntent(tripJson, analysis) {
     metadata: tripJson.metadata || {}
   };
 
-  const date = resolveDateReference(analysis, tripJson);
+  const date = resolveDateReference(analysis, tripJson, timeZone);
 
 if (date) {
   const dateStr = date.toISOString().split("T")[0];
@@ -363,8 +380,8 @@ if (password !== "Rigo090490!") {
 
     if (url.pathname === "/api/chat" && request.method === "POST") {
       try {
-        const { tripId, question } = await request.json();
-
+        const { tripId, question, timeZone } = await request.json();
+       
         const tripText = await env.TRIPS.get(tripId);
 
         if (!tripText) {
@@ -396,7 +413,7 @@ if (analysis.needs_clarification) {
   });
 }
 
-const context = buildContextByIntent(tripJson, analysis);
+const context = buildContextByIntent(tripJson, analysis, timeZone);
 const intent = analysis.intent || "general";
 
         const response = await fetch("https://api.deepseek.com/chat/completions", {
@@ -506,38 +523,41 @@ return Response.json({ answer, intent });
 
   <script>
     async function ask() {
-      const question = document.getElementById("question").value;
-      const answerBox = document.getElementById("answer");
+  const question = document.getElementById("question").value;
+  const answerBox = document.getElementById("answer");
 
-      if (!question) {
-        answerBox.innerText = "Escribe una pregunta primero.";
-        return;
-      }
+  if (!question) {
+    answerBox.innerText = "Escribe una pregunta primero.";
+    return;
+  }
 
-      answerBox.innerText = "Pensando...";
+  answerBox.innerText = "Pensando...";
 
-      try {
-        const res = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            tripId: "${tripId}",
-            question: question
-          })
-        });
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-        const data = await res.json();
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tripId: "${tripId}",
+        question: question,
+        timeZone: timeZone
+      })
+    });
 
-        if (!res.ok) {
-          answerBox.innerText = "Error: " + (data.answer || data.message || JSON.stringify(data));
-          return;
-        }
+    const data = await res.json();
 
-        answerBox.innerText = data.answer || "No recibí respuesta.";
-      } catch (error) {
-        answerBox.innerText = "Error de conexión: " + error.message;
-      }
+    if (!res.ok) {
+      answerBox.innerText = "Error: " + (data.answer || data.message || JSON.stringify(data));
+      return;
     }
+
+    answerBox.innerText = data.answer || "No recibí respuesta.";
+  } catch (error) {
+    answerBox.innerText = "Error de conexión: " + error.message;
+  }
+}
   </script>
 
   <hr>
