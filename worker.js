@@ -257,7 +257,7 @@ export default {
       answer: "Error al procesar la pregunta: " + String(e)
     }, { status: 500 });
   }
-});
+}
 
         const data = await response.json();
 
