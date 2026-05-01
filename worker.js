@@ -623,6 +623,15 @@ const intent = analysis.intent || "general";
 const conflicts = detectBasicConflicts(tripJson);
 context.detected_conflicts = conflicts;
 
+const needsThinking =
+  intent === "recommendation" ||
+  question.toLowerCase().includes("conflicto") ||
+  question.toLowerCase().includes("pesado") ||
+  question.toLowerCase().includes("conviene") ||
+  question.toLowerCase().includes("tengo tiempo") ||
+  question.toLowerCase().includes("me da tiempo") ||
+  question.toLowerCase().includes("riesgo");
+        
         const response = await fetch("https://api.deepseek.com/chat/completions", {
           method: "POST",
           headers: {
@@ -631,7 +640,7 @@ context.detected_conflicts = conflicts;
           },
           body: JSON.stringify({
             model: "deepseek-v4-flash",
-            thinking: { type: "disabled" },
+            thinking: { type: needsThinking ? "enabled" : "disabled" },
             temperature: 0.3,
             max_tokens: 700,
             messages: [
@@ -690,7 +699,8 @@ await env.CHAT_LOGS.put(logId, JSON.stringify({
   city: analysis.city || null,
   answer: answer,
   context_characters: contextText.length,
-  approximate_context_tokens: approximateTokens
+  approximate_context_tokens: approximateTokens,
+  thinking_enabled: needsThinking
 }));
 
 return Response.json({ answer, intent });
