@@ -89,12 +89,15 @@ export default {
         "Authorization": "Bearer " + apiKey,
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({
-        model: "deepseek-chat",
-        messages: [
+body: JSON.stringify({
+  model: "deepseek-v4-flash",
+  thinking: { type: "disabled" },
+  temperature: 0.3,
+  max_tokens: 700,
+  messages: [
           {
             role: "system",
-            content: "Eres un concierge de viajes. Responde claro y útil usando la información del viaje."
+            content: "Eres Yompr Personal Concierge, un asistente de viaje premium. Responde en español claro, breve y útil. Usa solo la información del viaje proporcionada. Si no sabes algo con certeza, dilo. No inventes datos. Si detectas una emergencia o problema serio, recomienda contactar a Rigo."
           },
           {
             role: "user",
