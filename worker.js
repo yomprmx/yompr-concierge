@@ -460,6 +460,7 @@ if (url.pathname === "/admin/logs") {
       <td>${log.intent || ""}</td>
       <td>${log.scope || ""}</td>
       <td>${log.city || ""}</td>
+      <td>${log.thinking_enabled ? "🧠 Sí" : "—"}</td>
       <td>${log.approximate_context_tokens || ""}</td>
       <td>${log.question || ""}</td>
       <td>${log.answer || ""}</td>
@@ -488,6 +489,7 @@ if (url.pathname === "/admin/logs") {
         <th>Tokens aprox</th>
         <th>Pregunta</th>
         <th>Respuesta</th>
+        <th>Thinking</th>
       </tr>
     </thead>
     <tbody>
