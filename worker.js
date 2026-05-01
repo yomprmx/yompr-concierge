@@ -53,12 +53,10 @@ const flightSegment = (tripJson.flightReservations || [])
     (s.departureAirport || "").toLowerCase().includes(city)
   );
 
-  const airport = flightSegment?.departureAirport;
+  if (!hotel || !flightSegment) return null;
 
-  if (!hotel || !flight) return null;
-
-  const hotelAddress = hotel.accommodationAddress;
-  const airport = flight.departureAirport;
+const hotelAddress = hotel.accommodationAddress;
+const airport = flightSegment?.departureAirport;
 
   if (!hotelAddress || !airport) return null;
 
