@@ -499,19 +499,24 @@ if (url.pathname === "/admin/logs") {
 
   logs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
-  const rows = logs.map(log => `
-    <tr>
-      <td>${log.created_at || ""}</td>
-      <td>${log.trip_id || ""}</td>
-      <td>${log.intent || ""}</td>
-      <td>${log.scope || ""}</td>
-      <td>${log.city || ""}</td>
-      <td>${log.thinking_enabled ? "🧠 Sí" : "—"}</td>
-      <td>${log.approximate_context_tokens || ""}</td>
-      <td>${log.question || ""}</td>
-      <td style="max-width: 400px; white-space: pre-wrap;">${log.answer || ""}</td>    </tr>
-  `).join("");
-
+ const rows = logs.map(log => `
+  <tr>
+    <td>${log.created_at || ""}</td>
+    <td>${log.trip_id || ""}</td>
+    <td>${log.intent || ""}</td>
+    <td>${log.scope || ""}</td>
+    <td>${log.city || ""}</td>
+    <td>${log.thinking_enabled ? "🧠 Sí" : "—"}</td>
+    <td>${log.approximate_context_tokens || ""}</td>
+    <td>${log.transport_used ? "Sí" : "—"}</td>
+    <td>${log.transport_duration_min || ""}</td>
+    <td>${log.transport_distance_km || ""}</td>
+    <td>${log.transport_error || ""}</td>
+    <td>${log.question || ""}</td>
+    <td style="max-width: 400px; white-space: pre-wrap;">${log.answer || ""}</td>
+  </tr>
+`).join("");
+  
   return new Response(`
 <!DOCTYPE html>
 <html>
@@ -672,6 +677,7 @@ context.detected_conflicts = conflicts;
 
 let transportInfo = null;
 let transportUsed = false;
+let transportError = null;
 
 try {
   transportInfo = await enrichWithTransportInfo(tripJson);
@@ -682,6 +688,7 @@ try {
   }
 } catch (e) {
   transportUsed = false;
+  transportError = String(e);
 }
         
 if (transportInfo) {
