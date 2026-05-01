@@ -113,11 +113,11 @@ body: JSON.stringify({
 
     return Response.json({ answer });
 
-  } catch (e) {
-    return Response.json({ answer: "Error al procesar la pregunta." });
-  }
+} catch (e) {
+  return Response.json({
+    answer: "Error al procesar la pregunta: " + String(e)
+  }, { status: 500 });
 }
-
         if (!tripId) {
           return Response.json({
             success: false,
@@ -188,19 +188,36 @@ body: JSON.stringify({
 <script>
 async function ask() {
   const question = document.getElementById("question").value;
+  const answerBox = document.getElementById("answer");
 
-  const res = await fetch("/api/chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      tripId: "${tripId}",
-      question
-    })
-  });
+  if (!question) {
+    answerBox.innerText = "Escribe una pregunta primero.";
+    return;
+  }
 
-  const data = await res.json();
+  answerBox.innerText = "Pensando...";
 
-  document.getElementById("answer").innerText = data.answer;
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tripId: "${tripId}",
+        question: question
+      })
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      answerBox.innerText = "Error: " + (data.answer || data.message || JSON.stringify(data));
+      return;
+    }
+
+    answerBox.innerText = data.answer || "No recibí respuesta.";
+  } catch (error) {
+    answerBox.innerText = "Error de conexión: " + error.message;
+  }
 }
 </script>
           <p>Yompr Personal Concierge — primera versión funcionando.</p>
