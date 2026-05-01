@@ -35,14 +35,23 @@ function buildGoogleMapsLink(origin, destination) {
   return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(destination)}`;
 }
 
-async function enrichWithTransportInfo(tripJson) {
+async function enrichWithTransportInfo(tripJson, analysis) {
   const hotels = tripJson.hotelVouchers || [];
   const flights = tripJson.flightReservations || [];
 
   if (!hotels.length || !flights.length) return null;
 
-  const hotel = hotels[0];
-  const flight = flights[0]?.segments?.[0];
+const city = (analysis.city || "").toLowerCase();
+
+const hotel = (tripJson.hotelVouchers || []).find(h =>
+  JSON.stringify(h).toLowerCase().includes(city)
+);
+
+const flightSegment = (tripJson.flightReservations || [])
+  .flatMap(r => r.segments || [])
+  .find(s =>
+    (s.departureAirport || "").toLowerCase().includes(city)
+  );
 
   if (!hotel || !flight) return null;
 
