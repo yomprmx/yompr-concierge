@@ -22,15 +22,19 @@ function normalizeText(value) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
-function inferCityFromQuestion(question) {
-  const q = normalizeText(question);
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
 
-  if (q.includes("paris")) return "París";
-  if (q.includes("roma")) return "Roma";
-  if (q.includes("venecia")) return "Venecia";
-  if (q.includes("barcelona")) return "Barcelona";
-
-  return null;
+function compactText(value, maxLength = 1200) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (text.length <= maxLength) return text;
+  return text.slice(0, maxLength) + "...";
 }
 
 function inferRouteDirectionFromQuestion(question) {
@@ -59,17 +63,41 @@ function inferRouteDirectionFromQuestion(question) {
   return "unknown";
 }
 
-function airportCodeForCity(city) {
-  const c = normalizeText(city || "");
+function inferRouteModeFromQuestion(question) {
+  const q = normalizeText(question);
 
-  const map = {
-    paris: "CDG",
-    roma: "FCO",
-    venecia: "VCE",
-    barcelona: "BCN"
-  };
+  if (
+    q.includes("a pie") ||
+    q.includes("caminando") ||
+    q.includes("caminar") ||
+    q.includes("andando")
+  ) {
+    return "walking";
+  }
 
-  return map[c] || null;
+  if (
+    q.includes("taxi") ||
+    q.includes("uber") ||
+    q.includes("coche") ||
+    q.includes("auto") ||
+    q.includes("carro")
+  ) {
+    return "driving";
+  }
+
+  if (
+    q.includes("transporte publico") ||
+    q.includes("transporte público") ||
+    q.includes("metro") ||
+    q.includes("tren") ||
+    q.includes("bus") ||
+    q.includes("autobus") ||
+    q.includes("autobús")
+  ) {
+    return "transit";
+  }
+
+  return "all";
 }
 
 function postProcessAnalysis(question, analysis) {
@@ -82,7 +110,21 @@ function postProcessAnalysis(question, analysis) {
     q.includes("como llego") ||
     q.includes("cómo llego") ||
     q.includes("ruta") ||
-    q.includes("traslado");
+    q.includes("traslado") ||
+    q.includes("caminando") ||
+    q.includes("a pie") ||
+    q.includes("taxi") ||
+    q.includes("uber") ||
+    q.includes("metro") ||
+    q.includes("tren") ||
+    q.includes("bus") ||
+    q.includes("transporte publico") ||
+    q.includes("transporte público") ||
+    q.includes("cerca") ||
+    q.includes("distancia") ||
+    q.includes("estacion") ||
+    q.includes("estación") ||
+    q.includes("terminal");
 
   if (!analysis || typeof analysis !== "object") {
     analysis = {};
@@ -93,37 +135,251 @@ function postProcessAnalysis(question, analysis) {
     analysis.tool_needed = "route";
     analysis.needs_clarification = false;
     analysis.clarification_question = null;
-    analysis.route_mode = inferRouteModeFromQuestion(question);
 
-    if (!analysis.city) {
-      analysis.city = inferCityFromQuestion(question);
-    }
-
-    if (!analysis.scope || analysis.scope === "unknown") {
-      analysis.scope = analysis.city ? "city" : "all";
+    if (!analysis.route_mode || analysis.route_mode === "unknown") {
+      analysis.route_mode = inferRouteModeFromQuestion(question);
     }
 
     if (!analysis.route_direction || analysis.route_direction === "unknown") {
       analysis.route_direction = inferRouteDirectionFromQuestion(question);
     }
-
-    if (!analysis.airport_code && analysis.city) {
-      analysis.airport_code = airportCodeForCity(analysis.city);
-    }
   }
+
+  analysis.intent = analysis.intent || "general";
+  analysis.scope = analysis.scope || "all";
+  analysis.city = analysis.city || null;
+  analysis.date_reference = analysis.date_reference || null;
+  analysis.tool_needed = analysis.tool_needed || "none";
+  analysis.route_direction = analysis.route_direction || "unknown";
+  analysis.route_mode = analysis.route_mode || "all";
+  analysis.airport_code = analysis.airport_code || null;
+  analysis.origin_query = analysis.origin_query || null;
+  analysis.destination_query = analysis.destination_query || null;
+  analysis.place_name = analysis.place_name || null;
+  analysis.needs_clarification = Boolean(analysis.needs_clarification);
+  analysis.clarification_question = analysis.clarification_question || null;
 
   return analysis;
 }
 
-function airportLabelForCode(code) {
-  const map = {
-    CDG: "Charles de Gaulle Airport",
-    FCO: "Rome Fiumicino Airport",
-    VCE: "Venice Marco Polo Airport",
-    BCN: "Barcelona El Prat Airport"
-  };
+function getAllHotels(tripJson) {
+  return tripJson.hotelVouchers || [];
+}
 
-  return map[code] || `${code} airport`;
+function getAllFlightSegments(tripJson) {
+  return (tripJson.flightReservations || []).flatMap(r => r.segments || []);
+}
+
+function getHotelAddress(hotel) {
+  return hotel?.accommodationAddress || hotel?.address || hotel?.hotelAddress || null;
+}
+
+function getHotelName(hotel) {
+  return hotel?.accommodationName || hotel?.hotelName || hotel?.name || null;
+}
+
+function getHotelSearchText(hotel) {
+  return normalizeText([
+    getHotelName(hotel),
+    getHotelAddress(hotel),
+    hotel?.city,
+    hotel?.destination,
+    hotel?.country,
+    JSON.stringify(hotel)
+  ].filter(Boolean).join(" "));
+}
+
+function getTripSearchText(tripJson) {
+  return normalizeText([
+    tripJson.trip?.name,
+    tripJson.trip?.destination,
+    JSON.stringify(tripJson.trip || {}),
+    JSON.stringify(tripJson.metadata || {})
+  ].filter(Boolean).join(" "));
+}
+
+function makeRouteContextForClassifier(tripJson) {
+  const hotels = getAllHotels(tripJson).map((h, index) => ({
+    index,
+    name: getHotelName(h),
+    address: getHotelAddress(h),
+    city: h.city || h.destination || null,
+    raw_hint: compactText(JSON.stringify(h), 700)
+  }));
+
+  const flightSegments = getAllFlightSegments(tripJson).map((s, index) => ({
+    index,
+    airline: [s.airlineCode, s.flightNumber].filter(Boolean).join(""),
+    departureAirport: s.departureAirport || null,
+    arrivalAirport: s.arrivalAirport || null,
+    departureDate: s.departureDate || s.departureDateTime || null,
+    arrivalDate: s.arrivalDate || s.arrivalDateTime || null,
+    raw_hint: compactText(JSON.stringify(s), 700)
+  }));
+
+  const services = (tripJson.serviceBookings || []).slice(0, 30).map((s, index) => ({
+    index,
+    category: s.category || null,
+    name: s.activity?.activityName || s.transfer?.pickupLocation || s.name || s.serviceName || null,
+    location: s.location || s.activity?.location || s.transfer?.pickupLocation || s.transfer?.dropoffLocation || null,
+    date: s.activity?.date || s.transfer?.date || s.date || null,
+    raw_hint: compactText(JSON.stringify(s), 700)
+  }));
+
+  return {
+    trip: tripJson.trip || {},
+    hotels,
+    flightSegments,
+    services
+  };
+}
+
+function scoreTextMatch(text, terms) {
+  let score = 0;
+
+  for (const term of terms) {
+    const normalizedTerm = normalizeText(term);
+    if (!normalizedTerm) continue;
+
+    if (text.includes(normalizedTerm)) {
+      score += Math.min(10, Math.max(3, normalizedTerm.length / 4));
+    }
+  }
+
+  return score;
+}
+
+function findBestHotel(tripJson, analysis) {
+  const hotels = getAllHotels(tripJson);
+  if (!hotels.length) return null;
+  if (hotels.length === 1) return hotels[0];
+
+  const terms = [
+    analysis.city,
+    analysis.place_name,
+    analysis.origin_query,
+    analysis.destination_query
+  ].filter(Boolean);
+
+  let bestHotel = hotels[0];
+  let bestScore = -1;
+
+  for (const hotel of hotels) {
+    const text = getHotelSearchText(hotel);
+    const score = scoreTextMatch(text, terms);
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestHotel = hotel;
+    }
+  }
+
+  return bestHotel;
+}
+
+function findRelevantAirportCode(tripJson, analysis, hotel) {
+  const segments = getAllFlightSegments(tripJson);
+
+  if (analysis.airport_code) {
+    return String(analysis.airport_code).toUpperCase();
+  }
+
+  if (!segments.length) return null;
+
+  const city = normalizeText(analysis.city || "");
+  const hotelText = getHotelSearchText(hotel || {});
+  const tripText = getTripSearchText(tripJson);
+  const direction = analysis.route_direction;
+
+  function segmentScore(segment, airportField) {
+    const text = normalizeText(JSON.stringify(segment));
+    let score = 0;
+
+    if (city && text.includes(city)) score += 10;
+    if (hotelText && text && scoreTextMatch(text, [analysis.city, analysis.place_name]) > 0) score += 3;
+    if (tripText && text && scoreTextMatch(text, [analysis.city]) > 0) score += 2;
+    if (segment[airportField]) score += 1;
+
+    return score;
+  }
+
+  if (direction === "airport_to_hotel") {
+    const arrivals = segments.filter(s => s.arrivalAirport);
+    if (!arrivals.length) return null;
+
+    const ranked = arrivals
+      .map(s => ({ segment: s, score: segmentScore(s, "arrivalAirport") }))
+      .sort((a, b) => b.score - a.score);
+
+    return ranked[0]?.segment?.arrivalAirport || null;
+  }
+
+  if (direction === "hotel_to_airport") {
+    const departures = segments.filter(s => s.departureAirport);
+    if (!departures.length) return null;
+
+    const ranked = departures
+      .map(s => ({ segment: s, score: segmentScore(s, "departureAirport") }))
+      .sort((a, b) => b.score - a.score);
+
+    return ranked[0]?.segment?.departureAirport || null;
+  }
+
+  return null;
+}
+
+function airportQueryFromCode(code) {
+  return code ? `${String(code).toUpperCase()} airport` : null;
+}
+
+function buildRouteEndpoints(tripJson, analysis) {
+  const hotel = findBestHotel(tripJson, analysis);
+  const hotelAddress = getHotelAddress(hotel);
+  const airportCode = findRelevantAirportCode(tripJson, analysis, hotel);
+  const airportQuery = airportQueryFromCode(airportCode);
+
+  let origin = null;
+  let destination = null;
+
+  if (analysis.origin_query && analysis.destination_query) {
+    origin = analysis.origin_query;
+    destination = analysis.destination_query;
+  } else if (analysis.route_direction === "airport_to_hotel") {
+    origin = airportQuery;
+    destination = hotelAddress;
+  } else if (analysis.route_direction === "hotel_to_airport") {
+    origin = hotelAddress;
+    destination = airportQuery;
+  } else if (analysis.route_direction === "place_to_hotel") {
+    origin = analysis.place_name || analysis.origin_query;
+    destination = hotelAddress;
+  } else if (analysis.route_direction === "hotel_to_place") {
+    origin = hotelAddress;
+    destination = analysis.place_name || analysis.destination_query;
+  } else if (analysis.place_name && hotelAddress) {
+    origin = analysis.place_name;
+    destination = hotelAddress;
+  }
+
+  if (!origin || !destination) {
+    return null;
+  }
+
+  return {
+    origin,
+    destination,
+    hotel,
+    airport_code: airportCode || null
+  };
+}
+
+function buildGeocodeContext(tripJson, hotel, analysis) {
+  return [
+    analysis.city,
+    tripJson.trip?.destination,
+    getHotelName(hotel),
+    getHotelAddress(hotel)
+  ].filter(Boolean).join(", ");
 }
 
 async function geocode(address) {
@@ -139,7 +395,8 @@ async function geocode(address) {
 
   return {
     lat: parseFloat(data[0].lat),
-    lon: parseFloat(data[0].lon)
+    lon: parseFloat(data[0].lon),
+    display_name: data[0].display_name || null
   };
 }
 
@@ -182,108 +439,26 @@ function buildGoogleMapsLink(origin, destination, mode = null) {
   return url;
 }
 
-function inferRouteModeFromQuestion(question) {
-  const q = normalizeText(question);
-
-  if (
-    q.includes("a pie") ||
-    q.includes("caminando") ||
-    q.includes("caminar") ||
-    q.includes("andando")
-  ) {
-    return "walking";
-  }
-
-  if (
-    q.includes("taxi") ||
-    q.includes("uber") ||
-    q.includes("coche") ||
-    q.includes("auto") ||
-    q.includes("carro")
-  ) {
-    return "driving";
-  }
-
-  if (
-    q.includes("transporte publico") ||
-    q.includes("metro") ||
-    q.includes("tren") ||
-    q.includes("bus") ||
-    q.includes("autobus")
-  ) {
-    return "transit";
-  }
-
-  return "all";
-}
-
 async function enrichWithTransportInfo(tripJson, analysis) {
   if (analysis.tool_needed !== "route" && analysis.intent !== "route") {
     return null;
   }
 
-  const city = normalizeText(analysis.city || "");
-  const routeDirection = analysis.route_direction || "unknown";
   const requestedMode = analysis.route_mode || "all";
+  const endpoints = buildRouteEndpoints(tripJson, analysis);
 
-  const hotels = tripJson.hotelVouchers || [];
-  const allSegments = (tripJson.flightReservations || []).flatMap(r => r.segments || []);
-
-  let hotel = null;
-
-if (routeDirection === "hotel_to_place" && analysis.place_name) {
-  origin = hotel.accommodationAddress;
-  destination = analysis.place_name;
-}
-  
-  if (city) {
-    hotel = hotels.find(h =>
-      normalizeText(JSON.stringify(h)).includes(city)
-    );
-  }
-
-  if (!hotel && hotels.length === 1) {
-    hotel = hotels[0];
-  }
-
-  if (!hotel?.accommodationAddress) return null;
-
-  let airportCode = analysis.airport_code || airportCodeForCity(analysis.city);
-  let origin = null;
-  let destination = null;
-
-  
-if (routeDirection === "place_to_hotel" && analysis.place_name) {
-  origin = analysis.place_name;
-  destination = hotel.accommodationAddress;
-}
-
-  if (routeDirection === "airport_to_hotel") {
-    if (!airportCode) return null;
-
-    const segment = allSegments.find(s => s.arrivalAirport === airportCode);
-    airportCode = segment?.arrivalAirport || airportCode;
-
-    origin = airportLabelForCode(airportCode);
-    destination = hotel.accommodationAddress;
-  }
-
-  if (routeDirection === "hotel_to_airport") {
-    if (!airportCode) return null;
-
-    const segment = allSegments.find(s => s.departureAirport === airportCode);
-    airportCode = segment?.departureAirport || airportCode;
-
-    origin = hotel.accommodationAddress;
-    destination = airportLabelForCode(airportCode);
-  }
-
-  if (!origin || !destination) {
+  if (!endpoints) {
     return null;
   }
 
-  const originCoords = await geocode(origin);
-  const destinationCoords = await geocode(destination);
+  const { origin, destination, hotel, airport_code } = endpoints;
+  const geocodeContext = buildGeocodeContext(tripJson, hotel, analysis);
+
+  const originSearch = geocodeContext ? `${origin}, ${geocodeContext}` : origin;
+  const destinationSearch = geocodeContext ? `${destination}, ${geocodeContext}` : destination;
+
+  const originCoords = await geocode(originSearch);
+  const destinationCoords = await geocode(destinationSearch);
 
   if (!originCoords || !destinationCoords) {
     return null;
@@ -316,7 +491,7 @@ if (routeDirection === "place_to_hotel" && analysis.place_name) {
       duration_min: null,
       distance_km: null,
       maps_link: buildGoogleMapsLink(origin, destination, "transit"),
-      note: "El transporte público requiere horarios y rutas en tiempo real; confirma el tiempo exacto en Google Maps."
+      note: "El transporte público depende de horarios y disponibilidad en tiempo real; confirma el tiempo exacto en Google Maps."
     }
   };
 
@@ -333,12 +508,18 @@ if (routeDirection === "place_to_hotel" && analysis.place_name) {
   }
 
   return {
-    city: analysis.city || null,
-    route_direction: routeDirection,
+    route_direction: analysis.route_direction || "unknown",
     route_mode: requestedMode,
     origin,
     destination,
-    airport_code: airportCode || null,
+    airport_code: airport_code || null,
+    hotel_name: getHotelName(hotel),
+    hotel_address: getHotelAddress(hotel),
+
+    geocode_origin_query: originSearch,
+    geocode_destination_query: destinationSearch,
+    geocode_origin_result: originCoords.display_name || null,
+    geocode_destination_result: destinationCoords.display_name || null,
 
     duration_min: primary?.duration_min || null,
     distance_km: primary?.distance_km || null,
@@ -362,8 +543,8 @@ function collectTripEvents(tripJson) {
       events.push({
         type: "flight",
         title: `Vuelo ${segment.airlineCode || ""}${segment.flightNumber || ""} ${segment.departureAirport || ""} → ${segment.arrivalAirport || ""}`,
-        start: getEventDateTime(segment.departureDate),
-        end: getEventDateTime(segment.arrivalDate)
+        start: getEventDateTime(segment.departureDate || segment.departureDateTime),
+        end: getEventDateTime(segment.arrivalDate || segment.arrivalDateTime)
       });
     }
   }
@@ -479,45 +660,18 @@ function detectBasicConflicts(tripJson) {
   return conflicts;
 }
 
-function detectIntentLocal(question) {
-  const q = normalizeText(question);
+async function classifyIntentWithDeepSeek(question, env, tripJson, conversationHistory = []) {
+  const routeContext = makeRouteContextForClassifier(tripJson);
+  const cleanHistory = Array.isArray(conversationHistory)
+    ? conversationHistory
+        .filter(m =>
+          m &&
+          (m.role === "user" || m.role === "assistant") &&
+          typeof m.content === "string"
+        )
+        .slice(-6)
+    : [];
 
-  if (
-    q.includes("aeropuerto") ||
-    q.includes("que tan lejos") ||
-    q.includes("qué tan lejos") ||
-    q.includes("como llego") ||
-    q.includes("cómo llego") ||
-    q.includes("ruta") ||
-    q.includes("traslado") ||
-    q.includes("cerca") ||
-    q.includes("estacion") ||
-    q.includes("estación") ||
-    q.includes("terminal") ||
-    q.includes("metro") ||
-    q.includes("tren")
-  ) {
-    return "unknown";
-  }
-
-  const intents = {
-    hotel: ["hotel", "hospedaje", "alojamiento", "quedo", "quedar", "dormir", "habitación", "habitacion", "check in", "check-in", "pernoctar"],
-    flight: ["llegamos", "llega", "llegar", "salimos", "salir", "hora llegamos", "hora llega", "vuelo", "avión", "avion", "aeropuerto", "aerolínea", "aerolinea", "despega", "sale mi vuelo", "maleta", "equipaje", "terminal"],
-    activity: ["actividad", "tour", "excursión", "excursion", "boleto", "entrada", "evento"],
-    transfer: ["traslado", "chofer", "pickup", "recogida", "transporte"],
-    emergency: ["emergencia", "cancelaron", "perdí", "perdi", "no aparece", "ayuda urgente", "pasaporte", "accidente"],
-    weather: ["clima", "llover", "lluvia", "temperatura", "frío", "frio", "calor"],
-    nearby_places: ["cerca", "restaurante", "farmacia", "cajero", "supermercado", "comer"]
-  };
-
-  for (const [intent, words] of Object.entries(intents)) {
-    if (words.some(word => q.includes(word))) return intent;
-  }
-
-  return "unknown";
-}
-
-async function classifyIntentWithDeepSeek(question, env) {
   const response = await fetch("https://api.deepseek.com/chat/completions", {
     method: "POST",
     headers: {
@@ -528,55 +682,60 @@ async function classifyIntentWithDeepSeek(question, env) {
       model: "deepseek-v4-flash",
       thinking: { type: "enabled" },
       temperature: 0,
-      max_tokens: 500,
+      max_tokens: 700,
       messages: [
         {
           role: "system",
           content: `
-Eres un analista de intención para un concierge de viajes.
+Eres un clasificador de intención para un concierge de viajes.
 
 Responde SOLO JSON válido con este formato:
 
 {
   "intent": "hotel | flight | activity | transfer | weather | nearby_places | emergency | itinerary | recommendation | route | general",
   "scope": "all | city | date | next_event | specific_item | trip_analysis | unknown",
-  "city": "nombre de ciudad si aplica, si no null",
+  "city": "ciudad si aplica, si no null",
   "date_reference": "hoy | mañana | fecha específica | null",
   "tool_needed": "none | route | places | weather",
-  "route_direction": "airport_to_hotel | hotel_to_airport | hotel_to_place | place_to_hotel | unknown",
+  "route_direction": "airport_to_hotel | hotel_to_airport | hotel_to_place | place_to_hotel | place_to_place | unknown",
   "route_mode": "walking | driving | transit | all",
-  "airport_code": "código IATA si aplica, si no null",
-  "place_name": "nombre del lugar si aplica, si no null",
+  "airport_code": "código IATA si aparece explícitamente o se puede inferir del contexto, si no null",
+  "origin_query": "origen textual si aplica, si no null",
+  "destination_query": "destino textual si aplica, si no null",
+  "place_name": "lugar mencionado si aplica, si no null",
   "confidence": 0-1,
   "needs_clarification": true/false,
   "clarification_question": "pregunta corta si hace falta aclarar"
 }
 
 Reglas:
-- Si pregunta por distancia, ruta, aeropuerto, cómo llegar o traslado, usa intent="route" y tool_needed="route".
-- Si dice "cuando llego", "al llegar", "llegada", usa route_direction="airport_to_hotel".
-- Si dice "cuando salgo", "para mi vuelo", "al aeropuerto", "regreso", usa route_direction="hotel_to_airport".
-- Si menciona París, Roma, Venecia o Barcelona, usa scope="city" y city correspondiente.
-- Si puedes inferir el aeropuerto por ciudad o vuelo, llena airport_code.
-- No pidas aclaración si se puede resolver revisando el itinerario.
-- Solo pide aclaración si realmente faltan datos indispensables.
-- Responde SOLO JSON válido.
-- Para preguntas sobre aeropuerto, distancia, ruta o cómo llegar, NO pidas aclaración si aparece una ciudad del itinerario.
-- Si el usuario dice "cuando llego", interpreta que quiere la ruta desde el aeropuerto de llegada hacia el hotel.
-- Si el usuario dice "cuando salgo", "regreso" o "para mi vuelo", interpreta que quiere la ruta desde el hotel hacia el aeropuerto de salida.
-- Si no estás seguro pero la ciudad está clara, usa intent="route", tool_needed="route" y route_direction según la mejor inferencia.
-- Si el usuario pregunta por distancia o ruta entre el hotel y una estación, museo, restaurante, punto de interés o lugar mencionado, llena place_name con ese lugar.
-- Si pregunta si un lugar está cerca del hotel, usa route_direction="place_to_hotel" o "hotel_to_place" según corresponda.
-- No limites place_name a ciudades específicas.
-- Si el usuario pregunta por transporte público, metro, tren, bus, taxi, Uber, caminando, a pie, distancia, ruta o cómo llegar, usa intent="route" y tool_needed="route".
-- Si pregunta "transporte público para llegar al hotel", interpreta que quiere llegar desde el punto relevante anterior del viaje hacia el hotel. Si el contexto es llegada al destino o aeropuerto, usa route_direction="airport_to_hotel".
-- Si pregunta "¿está cerca del hotel?", "¿cómo llego desde ahí?" o menciona una estación, museo, restaurante, terminal o punto de interés, usa route_direction="place_to_hotel" o "hotel_to_place" y llena place_name.
-- No clasifiques como hotel solo porque aparece la palabra "hotel"; si la pregunta trata sobre llegar, distancia, transporte o ubicación, clasifica como route.
+- Si la pregunta trata sobre distancia, ubicación, ruta, caminar, taxi, Uber, coche, transporte público, metro, tren, bus, aeropuerto o traslado, usa intent="route" y tool_needed="route".
+- No clasifiques como hotel solo porque aparece la palabra "hotel"; si la pregunta es sobre llegar, distancia o ubicación, clasifica como route.
+- Usa el contexto del viaje para inferir hotel, ciudad y aeropuertos. No inventes datos fuera del contexto.
+- Si pregunta "cuando llego", "al llegar", "llegada", usa route_direction="airport_to_hotel".
+- Si pregunta "cuando salgo", "para mi vuelo", "al aeropuerto", "regreso", usa route_direction="hotel_to_airport".
+- Si pregunta "desde [lugar] al hotel", usa route_direction="place_to_hotel", origin_query="[lugar]" y place_name="[lugar]".
+- Si pregunta "del hotel a [lugar]", usa route_direction="hotel_to_place", destination_query="[lugar]" y place_name="[lugar]".
+- Si pregunta por transporte público, usa route_mode="transit".
+- Si pregunta caminando, a pie o caminar, usa route_mode="walking".
+- Si pregunta por taxi, Uber, coche, auto o carro, usa route_mode="driving".
+- Si no especifica modo, usa route_mode="all".
+- Si hay varios hoteles, usa city, place_name, origin_query o destination_query para identificar el hotel más probable.
+- Si la pregunta menciona un lugar que parece contener el nombre de una ciudad, no asumas que es esa ciudad; puede ser un punto de interés, estación o plaza.
+- No pidas aclaración si origen/destino se puede resolver usando el itinerario.
+- Pide aclaración solo si falta un origen o destino indispensable.
+- Responde SOLO JSON válido. Nada antes ni después.
 `
         },
         {
           role: "user",
-          content: question
+          content:
+            "Contexto del viaje para clasificar:\n" +
+            JSON.stringify(routeContext) +
+            "\n\nHistorial reciente:\n" +
+            JSON.stringify(cleanHistory) +
+            "\n\nPregunta actual:\n" +
+            question
         }
       ]
     })
@@ -584,7 +743,6 @@ Reglas:
 
   const data = await response.json();
   const content = data.choices?.[0]?.message?.content || "{}";
-
   const parsed = extractJsonObject(content);
 
   if (parsed) {
@@ -598,7 +756,11 @@ Reglas:
     date_reference: null,
     tool_needed: "none",
     route_direction: "unknown",
+    route_mode: "all",
     airport_code: null,
+    origin_query: null,
+    destination_query: null,
+    place_name: null,
     confidence: 0,
     needs_clarification: false,
     clarification_question: null
@@ -623,33 +785,28 @@ function getTodayInTimezone(timeZone = "UTC") {
 }
 
 function resolveDateReference(analysis, tripJson, timeZone) {
-  const ref = (analysis.date_reference || "").toLowerCase();
-
+  const ref = normalizeText(analysis.date_reference || "");
   const startDate = getTodayInTimezone(timeZone || "UTC");
 
   if (ref === "hoy") {
     return startDate;
   }
 
-  if (ref === "mañana") {
+  if (ref === "manana") {
     const d = new Date(startDate);
     d.setDate(d.getDate() + 1);
     return d;
   }
 
-  return null;
+  const possibleDate = getEventDateTime(analysis.date_reference);
+  return possibleDate;
 }
 
 function getTripStartDate(tripJson) {
-  const flights = tripJson.flightReservations || [];
+  const events = collectTripEvents(tripJson);
+  if (events.length) return events[0].start;
 
-  if (flights.length > 0) {
-    const firstFlight = flights[0];
-    const date = firstFlight.departureDate || firstFlight.departureDateTime;
-    if (date) return new Date(date);
-  }
-
-  const hotels = tripJson.hotelVouchers || [];
+  const hotels = getAllHotels(tripJson);
   if (hotels.length > 0 && hotels[0].checkIn) {
     return new Date(hotels[0].checkIn);
   }
@@ -719,18 +876,19 @@ function buildContextByIntent(tripJson, analysis, timeZone) {
   }
 
   if (scope === "city" && city) {
-    const matchesCity = (text) => normalizeText(text).includes(city);
+    const matchesCity = text => normalizeText(text).includes(city);
 
     return {
       ...base,
       flightReservations: tripJson.flightReservations || [],
       hotelVouchers: (tripJson.hotelVouchers || []).filter(h =>
-        matchesCity(h.accommodationAddress) ||
-        matchesCity(h.accommodationName)
+        matchesCity(getHotelAddress(h)) ||
+        matchesCity(getHotelName(h)) ||
+        matchesCity(JSON.stringify(h))
       ),
       serviceBookings: (tripJson.serviceBookings || []).filter(s =>
         matchesCity(s.location) ||
-        normalizeText(JSON.stringify(s)).includes(city)
+        matchesCity(JSON.stringify(s))
       )
     };
   }
@@ -794,19 +952,26 @@ export default {
 
       const rows = logs.map(log => `
   <tr>
-    <td>${log.created_at || ""}</td>
-    <td>${log.trip_id || ""}</td>
-    <td>${log.intent || ""}</td>
-    <td>${log.scope || ""}</td>
-    <td>${log.city || ""}</td>
+    <td>${escapeHtml(log.created_at || "")}</td>
+    <td>${escapeHtml(log.trip_id || "")}</td>
+    <td>${escapeHtml(log.intent || "")}</td>
+    <td>${escapeHtml(log.scope || "")}</td>
+    <td>${escapeHtml(log.city || "")}</td>
     <td>${log.thinking_enabled ? "🧠 Sí" : "—"}</td>
-    <td>${log.approximate_context_tokens || ""}</td>
+    <td>${escapeHtml(log.approximate_context_tokens || "")}</td>
     <td>${log.transport_used ? "Sí" : "—"}</td>
-    <td>${log.transport_duration_min || ""}</td>
-    <td>${log.transport_distance_km || ""}</td>
-    <td>${log.transport_error || ""}</td>
-    <td>${log.question || ""}</td>
-    <td style="max-width: 400px; white-space: pre-wrap;">${log.answer || ""}</td>
+    <td>${escapeHtml(log.transport_duration_min || "")}</td>
+    <td>${escapeHtml(log.transport_distance_km || "")}</td>
+    <td>${escapeHtml(log.transport_error || "")}</td>
+    <td>${escapeHtml(log.analysis_route_direction || "")}</td>
+    <td>${escapeHtml(log.analysis_route_mode || "")}</td>
+    <td>${escapeHtml(log.analysis_origin_query || "")}</td>
+    <td>${escapeHtml(log.analysis_destination_query || "")}</td>
+    <td>${escapeHtml(log.analysis_place_name || "")}</td>
+    <td>${escapeHtml(log.geocode_origin_query || "")}</td>
+    <td>${escapeHtml(log.geocode_destination_query || "")}</td>
+    <td>${escapeHtml(log.question || "")}</td>
+    <td style="max-width: 460px; white-space: pre-wrap;">${escapeHtml(log.answer || "")}</td>
   </tr>
 `).join("");
 
@@ -835,6 +1000,13 @@ export default {
         <th>Ruta min</th>
         <th>Dist km</th>
         <th>Error OSM</th>
+        <th>Route direction</th>
+        <th>Route mode</th>
+        <th>Origin query</th>
+        <th>Destination query</th>
+        <th>Place name</th>
+        <th>Geocode origin</th>
+        <th>Geocode destination</th>
         <th>Pregunta</th>
         <th>Respuesta</th>
       </tr>
@@ -951,9 +1123,18 @@ export default {
 
         const tripJson = JSON.parse(tripText);
 
-let analysis = await classifyIntentWithDeepSeek(question, env);
+        const cleanHistory = Array.isArray(conversationHistory)
+          ? conversationHistory
+              .filter(m =>
+                m &&
+                (m.role === "user" || m.role === "assistant") &&
+                typeof m.content === "string"
+              )
+              .slice(-8)
+          : [];
 
-analysis = postProcessAnalysis(question, analysis);
+        let analysis = await classifyIntentWithDeepSeek(question, env, tripJson, cleanHistory);
+        analysis = postProcessAnalysis(question, analysis);
 
         if (analysis.needs_clarification) {
           return Response.json({
@@ -966,6 +1147,7 @@ analysis = postProcessAnalysis(question, analysis);
         const intent = analysis.intent || "general";
         const conflicts = detectBasicConflicts(tripJson);
         context.detected_conflicts = conflicts;
+        context.intent_analysis = analysis;
 
         let transportInfo = null;
         let transportUsed = false;
@@ -983,24 +1165,15 @@ analysis = postProcessAnalysis(question, analysis);
           transportError = String(e);
         }
 
+        const q = normalizeText(question);
         const needsThinking =
           intent === "recommendation" ||
-          question.toLowerCase().includes("conflicto") ||
-          question.toLowerCase().includes("pesado") ||
-          question.toLowerCase().includes("conviene") ||
-          question.toLowerCase().includes("tengo tiempo") ||
-          question.toLowerCase().includes("me da tiempo") ||
-          question.toLowerCase().includes("riesgo");
-
-        const cleanHistory = Array.isArray(conversationHistory)
-          ? conversationHistory
-              .filter(m =>
-                m &&
-                (m.role === "user" || m.role === "assistant") &&
-                typeof m.content === "string"
-              )
-              .slice(-8)
-          : [];
+          q.includes("conflicto") ||
+          q.includes("pesado") ||
+          q.includes("conviene") ||
+          q.includes("tengo tiempo") ||
+          q.includes("me da tiempo") ||
+          q.includes("riesgo");
 
         const response = await fetch("https://api.deepseek.com/chat/completions", {
           method: "POST",
@@ -1012,7 +1185,7 @@ analysis = postProcessAnalysis(question, analysis);
             model: "deepseek-v4-flash",
             thinking: { type: needsThinking ? "enabled" : "disabled" },
             temperature: 0.3,
-            max_tokens: needsThinking ? 2400 : 700,
+            max_tokens: needsThinking ? 2400 : 800,
             messages: [
               {
                 role: "system",
@@ -1034,34 +1207,26 @@ Fechas:
 - No uses createdAt, modifiedAt ni exportedAt como fechas del viaje; son fechas administrativas.
 - Para determinar inicio, fin o días del viaje, usa vuelos, check-in/check-out, actividades y servicios.
 
-Antes del viaje:
-- Si el viaje aún no ha comenzado, explica que todavía no inicia.
-- Menciona cuándo inicia y cuál es el primer evento relevante.
-- Ofrece ayuda útil: documentos, equipaje, recomendaciones o preparación.
-
 Riesgos:
 - Si el contexto incluye detected_conflicts, menciona solo los relevantes para la pregunta del cliente.
 - Prioriza como riesgos reales: vuelos, traslados, trenes, actividades y tiempos insuficientes entre ellos.
-- Si hay insufficient_buffer antes de un vuelo, trátalo como riesgo importante. Considera traslado al aeropuerto, documentación, seguridad y abordaje.
 - El check-in y check-out del hotel son ventanas o límites administrativos, no eventos fijos.
-- No trates un vuelo antes del check-out estándar como conflicto crítico. Solo recomienda check-out anticipado y preparar equipaje con tiempo.
-- No recomiendes late check-out para resolver salidas tempranas.
 
 Estilo:
 - No seas redundante.
-- No uses lenguaje técnico, tus conversaciones son viajeros que buscan una experiencia de viaje.
-- Si haces una lista, termínala completa y cierra con una conclusión breve.
+- No uses lenguaje técnico innecesario; habla como concierge de viaje.
 - Si detectas emergencia o problema serio, recomienda contactar a Rigo.
 
 Si se incluye transport_info:
 - Usa transport_info como fuente principal para distancias y tiempos.
-- Si transport_info.options existe, puedes comparar caminando, taxi/coche y transporte público.
+- No inventes tiempos de ruta.
 - Para caminatas, usa solo transport_info.options.walking.
 - Para taxi/coche, usa solo transport_info.options.driving.
 - Para transporte público, si duration_min es null, NO inventes duración: di que debe confirmarse en el link de Google Maps por horarios en tiempo real.
+- Si transport_info.options existe, puedes comparar caminando, taxi/coche y transporte público.
 - No digas que algo queda a 5 minutos caminando si transport_info.options.walking indica otro tiempo.
 - Si el usuario pregunta “está cerca”, responde con la distancia y duración caminando cuando estén disponibles.
-- Si no hay transport_info, no inventes tiempos de ruta.
+- Si usas transport_info, menciona que es un tiempo estimado calculado.
 `
               },
               ...cleanHistory,
@@ -1069,11 +1234,11 @@ Si se incluye transport_info:
                 role: "user",
                 content:
                   "Intención detectada: " + intent +
-                  "\\nZona horaria del cliente: " + (timeZone || "desconocida") +
-                  "\\nFecha local del cliente: " + (localDate || "desconocida") +
-                  "\\n\\nContexto actualizado del viaje:\\n" +
+                  "\nZona horaria del cliente: " + (timeZone || "desconocida") +
+                  "\nFecha local del cliente: " + (localDate || "desconocida") +
+                  "\n\nContexto actualizado del viaje:\n" +
                   JSON.stringify(context) +
-                  "\\n\\nPregunta actual del cliente:\\n" +
+                  "\n\nPregunta actual del cliente:\n" +
                   question
               }
             ]
@@ -1092,17 +1257,16 @@ Si se incluye transport_info:
 
         const contextText = JSON.stringify(context);
         const approximateTokens = Math.ceil(contextText.length / 4);
-
         const logId = tripId + "-" + Date.now();
 
         await env.CHAT_LOGS.put(logId, JSON.stringify({
           created_at: new Date().toISOString(),
           trip_id: tripId,
-          question: question,
-          intent: intent,
+          question,
+          intent,
           scope: analysis.scope || "all",
           city: analysis.city || null,
-          answer: answer,
+          answer,
           context_characters: contextText.length,
           approximate_context_tokens: approximateTokens,
           analysis_thinking_enabled: true,
@@ -1114,7 +1278,20 @@ Si se incluye transport_info:
           transport_origin: transportInfo?.origin || null,
           transport_destination: transportInfo?.destination || null,
           transport_error: transportError,
-          used_transport_in_answer: answer.includes("traslado estimado")
+          transport_options: transportInfo?.options || null,
+          geocode_origin_query: transportInfo?.geocode_origin_query || null,
+          geocode_destination_query: transportInfo?.geocode_destination_query || null,
+          geocode_origin_result: transportInfo?.geocode_origin_result || null,
+          geocode_destination_result: transportInfo?.geocode_destination_result || null,
+          analysis_route_direction: analysis.route_direction || null,
+          analysis_route_mode: analysis.route_mode || null,
+          analysis_origin_query: analysis.origin_query || null,
+          analysis_destination_query: analysis.destination_query || null,
+          analysis_place_name: analysis.place_name || null,
+          used_transport_in_answer: Boolean(transportInfo) && (
+            answer.includes(String(transportInfo.duration_min || "__NO_DURATION__")) ||
+            answer.includes(String(transportInfo.distance_km || "__NO_DISTANCE__"))
+          )
         }));
 
         return Response.json({ answer, intent });
@@ -1145,12 +1322,10 @@ Si se incluye transport_info:
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>${trip.name || "Yompr Concierge"}</title>
+  <title>${escapeHtml(trip.name || "Yompr Concierge")}</title>
 
   <style>
-    * {
-      box-sizing: border-box;
-    }
+    * { box-sizing: border-box; }
 
     body {
       margin: 0;
@@ -1219,13 +1394,8 @@ Si se incluye transport_info:
       margin-bottom: 12px;
     }
 
-    .message-row.user {
-      justify-content: flex-end;
-    }
-
-    .message-row.assistant {
-      justify-content: flex-start;
-    }
+    .message-row.user { justify-content: flex-end; }
+    .message-row.assistant { justify-content: flex-start; }
 
     .bubble {
       max-width: 78%;
@@ -1268,9 +1438,7 @@ Si se incluye transport_info:
       outline: none;
     }
 
-    .composer input:focus {
-      border-color: #111827;
-    }
+    .composer input:focus { border-color: #111827; }
 
     .composer button {
       border: none;
@@ -1303,13 +1471,8 @@ Si se incluye transport_info:
         font-size: 15px;
       }
 
-      .header {
-        padding: 14px 16px;
-      }
-
-      .messages {
-        padding: 14px;
-      }
+      .header { padding: 14px 16px; }
+      .messages { padding: 14px; }
     }
   </style>
 </head>
@@ -1317,8 +1480,8 @@ Si se incluye transport_info:
 <body>
   <div class="app">
     <div class="header">
-      <h1>${trip.name || "Yompr Concierge"}</h1>
-      <p>${trip.destination ? "Destino: " + trip.destination : "Tu concierge personal de viaje"}</p>
+      <h1>${escapeHtml(trip.name || "Yompr Concierge")}</h1>
+      <p>${escapeHtml(trip.destination ? "Destino: " + trip.destination : "Tu concierge personal de viaje")}</p>
 
       <div class="trip-summary">
         <span class="chip">${flights.length} vuelo(s)</span>
@@ -1354,7 +1517,6 @@ Si se incluye transport_info:
 
     function addMessage(role, content, extraClass) {
       const messages = document.getElementById("messages");
-
       const row = document.createElement("div");
       row.className = "message-row " + role;
 
@@ -1364,16 +1526,12 @@ Si se incluye transport_info:
 
       row.appendChild(bubble);
       messages.appendChild(row);
-
       scrollToBottom();
-
       return row;
     }
 
     function handleKeyDown(event) {
-      if (event.key === "Enter") {
-        ask();
-      }
+      if (event.key === "Enter") ask();
     }
 
     async function ask() {
@@ -1390,12 +1548,8 @@ Si se incluye transport_info:
       sendButton.disabled = true;
 
       const thinkingRow = addMessage("assistant", "Pensando...", "typing");
-
       const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-
-      const localDate = new Date().toLocaleDateString("en-CA", {
-        timeZone: timeZone
-      });
+      const localDate = new Date().toLocaleDateString("en-CA", { timeZone });
 
       try {
         const res = await fetch("/api/chat", {
@@ -1403,15 +1557,14 @@ Si se incluye transport_info:
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             tripId: "${tripId}",
-            question: question,
-            timeZone: timeZone,
-            localDate: localDate,
-            conversationHistory: conversationHistory
+            question,
+            timeZone,
+            localDate,
+            conversationHistory
           })
         });
 
         const data = await res.json();
-
         thinkingRow.remove();
 
         if (!res.ok) {
@@ -1423,18 +1576,9 @@ Si se incluye transport_info:
         const answer = data.answer || "No recibí respuesta.";
         addMessage("assistant", answer);
 
-        conversationHistory.push({
-          role: "user",
-          content: question
-        });
-
-        conversationHistory.push({
-          role: "assistant",
-          content: answer
-        });
-
+        conversationHistory.push({ role: "user", content: question });
+        conversationHistory.push({ role: "assistant", content: answer });
         conversationHistory = conversationHistory.slice(-8);
-
       } catch (error) {
         thinkingRow.remove();
         addMessage("assistant", "Error de conexión: " + error.message);
