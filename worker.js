@@ -33,8 +33,26 @@ async function classifyIntentWithDeepSeek(question, env) {
       messages: [
         {
           role: "system",
-          content: "Clasifica la intención de la pregunta de un viajero. Responde SOLO una palabra de esta lista: hotel, flight, activity, transfer, weather, nearby_places, emergency, itinerary, general."
-        },
+         content: `
+Eres un analista de intención para un concierge de viajes.
+
+Analiza la pregunta del cliente y responde SOLO en JSON con este formato:
+
+{
+  "intent": "hotel | flight | activity | transfer | weather | nearby_places | emergency | itinerary | general",
+  "confidence": 0-1,
+  "needs_clarification": true/false,
+  "clarification_question": "pregunta corta para aclarar"
+}
+
+Reglas:
+- Si NO estás seguro de la intención → confidence < 0.7
+- Si confidence < 0.7 → needs_clarification = true
+- Si la pregunta es ambigua → pide aclaración
+- La aclaración debe ser breve, clara y natural
+- No inventes información
+- Responde SOLO JSON válido
+`},
         {
           role: "user",
           content: question
@@ -43,8 +61,23 @@ async function classifyIntentWithDeepSeek(question, env) {
     })
   });
 
-  const data = await response.json();
-  return (data.choices?.[0]?.message?.content || "general").trim().toLowerCase();
+const data = await response.json();
+const content = data.choices?.[0]?.message?.content || "{}";
+
+let parsed;
+
+try {
+  parsed = JSON.parse(content);
+} catch (e) {
+  parsed = {
+    intent: "general",
+    confidence: 0,
+    needs_clarification: true,
+    clarification_question: "¿Podrías aclararme un poco más tu pregunta?"
+  };
+}
+
+return parsed;
 }
 
 function buildContextByIntent(tripJson, intent) {
@@ -184,9 +217,22 @@ export default {
 
         let intent = detectIntentLocal(question);
 
-        if (intent === "unknown") {
-          intent = await classifyIntentWithDeepSeek(question, env);
-        }
+        let needsClarification = false;
+let clarificationQuestion = null;
+
+if (intent === "unknown") {
+  const analysis = await classifyIntentWithDeepSeek(question, env);
+
+  intent = analysis.intent || "general";
+  needsClarification = analysis.needs_clarification;
+  clarificationQuestion = analysis.clarification_question;
+}
+        if (needsClarification) {
+  return Response.json({
+    answer: clarificationQuestion || "¿Podrías darme un poco más de detalle para ayudarte mejor?",
+    intent: "clarification"
+  });
+}
 
         const context = buildContextByIntent(tripJson, intent);
 
