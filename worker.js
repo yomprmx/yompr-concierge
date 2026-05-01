@@ -329,9 +329,26 @@ const intent = analysis.intent || "general";
           }, { status: 500 });
         }
 
-        const answer = data.choices?.[0]?.message?.content || "No pude responder.";
+       const answer = data.choices?.[0]?.message?.content || "No pude responder.";
 
-        return Response.json({ answer, intent });
+const contextText = JSON.stringify(context);
+const approximateTokens = Math.ceil(contextText.length / 4);
+
+const logId = tripId + "-" + Date.now();
+
+await env.CHAT_LOGS.put(logId, JSON.stringify({
+  created_at: new Date().toISOString(),
+  trip_id: tripId,
+  question: question,
+  intent: intent,
+  scope: analysis.scope || "all",
+  city: analysis.city || null,
+  answer: answer,
+  context_characters: contextText.length,
+  approximate_context_tokens: approximateTokens
+}));
+
+return Response.json({ answer, intent });
       } catch (e) {
         return Response.json({
           answer: "Error al procesar la pregunta: " + String(e)
