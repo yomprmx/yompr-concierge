@@ -1,3 +1,110 @@
+function extractJsonObject(text) {
+  if (!text) return null;
+
+  try {
+    return JSON.parse(text);
+  } catch (_) {}
+
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+
+  try {
+    return JSON.parse(match[0]);
+  } catch (_) {
+    return null;
+  }
+}
+
+function inferCityFromQuestion(question) {
+  const q = normalizeText(question);
+
+  if (q.includes("paris")) return "París";
+  if (q.includes("roma")) return "Roma";
+  if (q.includes("venecia")) return "Venecia";
+  if (q.includes("barcelona")) return "Barcelona";
+
+  return null;
+}
+
+function inferRouteDirectionFromQuestion(question) {
+  const q = normalizeText(question);
+
+  if (
+    q.includes("cuando llego") ||
+    q.includes("al llegar") ||
+    q.includes("llegada") ||
+    q.includes("cuando aterrizo") ||
+    q.includes("llegamos")
+  ) {
+    return "airport_to_hotel";
+  }
+
+  if (
+    q.includes("cuando salgo") ||
+    q.includes("para mi vuelo") ||
+    q.includes("al aeropuerto") ||
+    q.includes("regreso") ||
+    q.includes("salida")
+  ) {
+    return "hotel_to_airport";
+  }
+
+  return "unknown";
+}
+
+function postProcessAnalysis(question, analysis) {
+  const q = normalizeText(question);
+
+  const isRouteQuestion =
+    q.includes("aeropuerto") ||
+    q.includes("que tan lejos") ||
+    q.includes("qué tan lejos") ||
+    q.includes("como llego") ||
+    q.includes("cómo llego") ||
+    q.includes("ruta") ||
+    q.includes("traslado");
+
+  if (!analysis || typeof analysis !== "object") {
+    analysis = {};
+  }
+
+  if (isRouteQuestion) {
+    analysis.intent = "route";
+    analysis.tool_needed = "route";
+    analysis.needs_clarification = false;
+    analysis.clarification_question = null;
+
+    if (!analysis.city) {
+      analysis.city = inferCityFromQuestion(question);
+    }
+
+    if (!analysis.scope || analysis.scope === "unknown") {
+      analysis.scope = analysis.city ? "city" : "all";
+    }
+
+    if (!analysis.route_direction || analysis.route_direction === "unknown") {
+      analysis.route_direction = inferRouteDirectionFromQuestion(question);
+    }
+
+    if (!analysis.airport_code && analysis.city) {
+      analysis.airport_code = airportCodeForCity(analysis.city);
+    }
+  }
+
+  return analysis;
+}
+
+function airportLabelForCode(code) {
+  const map = {
+    CDG: "Charles de Gaulle Airport",
+    FCO: "Rome Fiumicino Airport",
+    VCE: "Venice Marco Polo Airport",
+    BCN: "Barcelona El Prat Airport"
+  };
+
+  return map[code] || `${code} airport`;
+}
+
 async function geocode(address) {
   const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&limit=1`;
 
@@ -55,6 +162,8 @@ async function enrichWithTransportInfo(tripJson, analysis) {
   const city = normalizeText(analysis.city || "");
   const routeDirection = analysis.route_direction || "unknown";
 
+  if (!city) return null;
+
   const hotels = tripJson.hotelVouchers || [];
   const allSegments = (tripJson.flightReservations || []).flatMap(r => r.segments || []);
 
@@ -64,21 +173,17 @@ async function enrichWithTransportInfo(tripJson, analysis) {
 
   if (!hotel?.accommodationAddress) return null;
 
-  let airportCode = analysis.airport_code || airportCodeForCity(city);
+  let airportCode = analysis.airport_code || airportCodeForCity(analysis.city);
+
+  if (!airportCode) return null;
 
   let segment = null;
 
   if (routeDirection === "airport_to_hotel") {
-    segment = allSegments.find(s =>
-      (airportCode && s.arrivalAirport === airportCode) ||
-      normalizeText(JSON.stringify(s)).includes(city)
-    );
+    segment = allSegments.find(s => s.arrivalAirport === airportCode);
     airportCode = segment?.arrivalAirport || airportCode;
   } else if (routeDirection === "hotel_to_airport") {
-    segment = allSegments.find(s =>
-      (airportCode && s.departureAirport === airportCode) ||
-      normalizeText(JSON.stringify(s)).includes(city)
-    );
+    segment = allSegments.find(s => s.departureAirport === airportCode);
     airportCode = segment?.departureAirport || airportCode;
   } else {
     segment = allSegments.find(s =>
@@ -86,10 +191,8 @@ async function enrichWithTransportInfo(tripJson, analysis) {
     );
   }
 
-  if (!airportCode) return null;
-
   const hotelAddress = hotel.accommodationAddress;
-  const airportAddress = airportCode + " airport";
+  const airportAddress = airportLabelForCode(airportCode);
 
   let origin = hotelAddress;
   let destination = airportAddress;
@@ -97,11 +200,11 @@ async function enrichWithTransportInfo(tripJson, analysis) {
   if (routeDirection === "airport_to_hotel") {
     origin = airportAddress;
     destination = hotelAddress;
-  }
-
-  if (routeDirection === "hotel_to_airport") {
+  } else if (routeDirection === "hotel_to_airport") {
     origin = hotelAddress;
     destination = airportAddress;
+  } else {
+    return null;
   }
 
   const originCoords = await geocode(origin);
@@ -329,6 +432,10 @@ Reglas:
 - No pidas aclaración si se puede resolver revisando el itinerario.
 - Solo pide aclaración si realmente faltan datos indispensables.
 - Responde SOLO JSON válido.
+- Para preguntas sobre aeropuerto, distancia, ruta o cómo llegar, NO pidas aclaración si aparece una ciudad del itinerario.
+- Si el usuario dice "cuando llego", interpreta que quiere la ruta desde el aeropuerto de llegada hacia el hotel.
+- Si el usuario dice "cuando salgo", "regreso" o "para mi vuelo", interpreta que quiere la ruta desde el hotel hacia el aeropuerto de salida.
+- Si no estás seguro pero la ciudad está clara, usa intent="route", tool_needed="route" y route_direction según la mejor inferencia.
 `
         },
         {
@@ -339,25 +446,27 @@ Reglas:
     })
   });
 
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || "{}";
+const data = await response.json();
+const content = data.choices?.[0]?.message?.content || "{}";
 
-  try {
-    return JSON.parse(content);
-  } catch (e) {
-    return {
-      intent: "general",
-      scope: "all",
-      city: null,
-      date_reference: null,
-      tool_needed: "none",
-      route_direction: "unknown",
-      airport_code: null,
-      confidence: 0,
-      needs_clarification: true,
-      clarification_question: "¿Podrías aclararme si te refieres al hotel, aeropuerto, vuelo o traslado?"
-    };
-  }
+const parsed = extractJsonObject(content);
+
+if (parsed) {
+  return parsed;
+}
+
+return {
+  intent: "general",
+  scope: "all",
+  city: null,
+  date_reference: null,
+  tool_needed: "none",
+  route_direction: "unknown",
+  airport_code: null,
+  confidence: 0,
+  needs_clarification: false,
+  clarification_question: null
+};
 }
 
 function normalizeText(value) {
@@ -720,10 +829,16 @@ if (localIntent === "unknown") {
     intent: localIntent,
     scope: "all",
     city: null,
+    date_reference: null,
+    tool_needed: "none",
+    route_direction: "unknown",
+    airport_code: null,
     needs_clarification: false,
     clarification_question: null
   };
 }
+
+analysis = postProcessAnalysis(question, analysis);
 
 if (analysis.needs_clarification) {
   return Response.json({
