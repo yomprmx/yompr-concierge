@@ -144,6 +144,23 @@ const startDate = getTodayInTimezone(timeZone || "UTC");
   return null;
 }
 
+function getTripStartDate(tripJson) {
+  const flights = tripJson.flightReservations || [];
+
+  if (flights.length > 0) {
+    const firstFlight = flights[0];
+    const date = firstFlight.departureDate || firstFlight.departureDateTime;
+    if (date) return new Date(date);
+  }
+
+  const hotels = tripJson.hotelVouchers || [];
+  if (hotels.length > 0 && hotels[0].checkIn) {
+    return new Date(hotels[0].checkIn);
+  }
+
+  return null;
+}
+
 function buildContextByIntent(tripJson, analysis, timeZone) {
   const intent = analysis.intent || "general";
   const scope = analysis.scope || "all";
@@ -159,7 +176,7 @@ function buildContextByIntent(tripJson, analysis, timeZone) {
 if (date) {
   const dateStr = date.toISOString().split("T")[0];
 
-  return {
+  const filtered = {
     ...base,
     flightReservations: (tripJson.flightReservations || []).filter(f =>
       JSON.stringify(f).includes(dateStr)
@@ -170,6 +187,40 @@ if (date) {
     serviceBookings: (tripJson.serviceBookings || []).filter(s =>
       JSON.stringify(s).includes(dateStr)
     )
+  };
+
+  const hasResults =
+    filtered.flightReservations.length ||
+    filtered.hotelVouchers.length ||
+    filtered.serviceBookings.length;
+
+  if (hasResults) {
+    return filtered;
+  }
+
+  // 👇 NUEVO: detectar si el viaje aún no empieza
+  const tripStart = getTripStartDate(tripJson);
+
+  if (tripStart && date < tripStart) {
+    return {
+      ...base,
+      note: "El viaje aún no comienza",
+      requested_date: dateStr,
+      trip_start: tripStart.toISOString(),
+      flightReservations: tripJson.flightReservations || [],
+      hotelVouchers: tripJson.hotelVouchers || [],
+      serviceBookings: tripJson.serviceBookings || []
+    };
+  }
+
+  // 👇 fallback si no hay nada ese día
+  return {
+    ...base,
+    note: "No hay actividades específicas para esta fecha",
+    requested_date: dateStr,
+    flightReservations: tripJson.flightReservations || [],
+    hotelVouchers: tripJson.hotelVouchers || [],
+    serviceBookings: tripJson.serviceBookings || []
   };
 }
   
