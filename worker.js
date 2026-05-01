@@ -670,6 +670,22 @@ const intent = analysis.intent || "general";
 const conflicts = detectBasicConflicts(tripJson);
 context.detected_conflicts = conflicts;
 
+        let transportInfo = null;
+let transportUsed = false;
+let transportError = null;
+
+try {
+  transportInfo = await enrichWithTransportInfo(tripJson);
+
+  if (transportInfo) {
+    context.transport_info = transportInfo;
+    transportUsed = true;
+  }
+} catch (e) {
+  transportUsed = false;
+  transportError = String(e);
+}
+
 let transportInfo = null;
 let transportUsed = false;
 
@@ -791,11 +807,11 @@ await env.CHAT_LOGS.put(logId, JSON.stringify({
   approximate_context_tokens: approximateTokens,
   thinking_enabled: needsThinking,
   transport_used: transportUsed,
-transport_duration_min: transportInfo?.duration_min || null,
-transport_distance_km: transportInfo?.distance_km || null,
-transport_origin: transportInfo?.origin || null,
-transport_destination: transportInfo?.destination || null,
-  transport_error: e ? String(e) : null,
+  transport_duration_min: transportInfo?.duration_min || null,
+  transport_distance_km: transportInfo?.distance_km || null,
+  transport_origin: transportInfo?.origin || null,
+  transport_destination: transportInfo?.destination || null,
+  transport_error: transportError,
   used_transport_in_answer: answer.includes("traslado estimado")
 }));
 
