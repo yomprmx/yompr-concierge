@@ -173,7 +173,7 @@ export default {
 if (url.pathname === "/admin/logs") {
   const password = url.searchParams.get("key");
 
-  if (password !== "12345") {
+  if (password !== "Rigo090490!") {
     return new Response("No autorizado", { status: 401 });
   }
 
