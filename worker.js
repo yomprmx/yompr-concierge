@@ -110,9 +110,7 @@ function buildContextByIntent(tripJson, analysis) {
 
     return {
       ...base,
-      flightReservations: (tripJson.flightReservations || []).filter(f =>
-        JSON.stringify(f).toLowerCase().includes(city)
-      ),
+     flightReservations: tripJson.flightReservations || [],
       hotelVouchers: (tripJson.hotelVouchers || []).filter(h =>
         matchesCity(h.accommodationAddress) ||
         matchesCity(h.accommodationName)
