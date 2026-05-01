@@ -1,3 +1,126 @@
+function getEventDateTime(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function collectTripEvents(tripJson) {
+  const events = [];
+
+  for (const reservation of tripJson.flightReservations || []) {
+    for (const segment of reservation.segments || []) {
+      events.push({
+        type: "flight",
+        title: `Vuelo ${segment.airlineCode || ""}${segment.flightNumber || ""} ${segment.departureAirport || ""} → ${segment.arrivalAirport || ""}`,
+        start: getEventDateTime(segment.departureDate),
+        end: getEventDateTime(segment.arrivalDate)
+      });
+    }
+  }
+
+  for (const hotel of tripJson.hotelVouchers || []) {
+    events.push({
+      type: "hotel_checkin",
+      title: `Check-in ${hotel.accommodationName || "hotel"}`,
+      start: getEventDateTime(hotel.checkInDate),
+      end: getEventDateTime(hotel.checkInDate)
+    });
+
+    events.push({
+      type: "hotel_checkout",
+      title: `Check-out ${hotel.accommodationName || "hotel"}`,
+      start: getEventDateTime(hotel.checkOutDate),
+      end: getEventDateTime(hotel.checkOutDate)
+    });
+  }
+
+  for (const service of tripJson.serviceBookings || []) {
+    if (service.category === "activity" && service.activity) {
+      const datePart = service.activity.date;
+      const timePart = service.activity.time || "00:00";
+      const dateOnly = datePart ? datePart.split("T")[0] : null;
+      const start = dateOnly ? getEventDateTime(`${dateOnly}T${timePart}:00`) : null;
+
+      events.push({
+        type: "activity",
+        title: service.activity.activityName || "Actividad",
+        start,
+        end: start
+      });
+    }
+
+    if (service.category === "transfer" && service.transfer) {
+      const datePart = service.transfer.date;
+      const timePart = service.transfer.pickupTime || "00:00";
+      const dateOnly = datePart ? datePart.split("T")[0] : null;
+      const start = dateOnly ? getEventDateTime(`${dateOnly}T${timePart}:00`) : null;
+
+      events.push({
+        type: "transfer",
+        title: `Traslado ${service.transfer.pickupLocation || ""} → ${service.transfer.dropoffLocation || ""}`,
+        start,
+        end: start
+      });
+    }
+  }
+
+  return events
+    .filter(e => e.start)
+    .sort((a, b) => a.start - b.start);
+}
+
+function detectBasicConflicts(tripJson) {
+  const events = collectTripEvents(tripJson);
+  const conflicts = [];
+
+  for (let i = 0; i < events.length - 1; i++) {
+    const current = events[i];
+    const next = events[i + 1];
+
+    const sameDay =
+      current.start.toISOString().split("T")[0] ===
+      next.start.toISOString().split("T")[0];
+
+    if (!sameDay) continue;
+
+    const currentEnd = current.end || current.start;
+    const minutesBetween = (next.start - currentEnd) / 60000;
+
+    if (minutesBetween < 0) {
+      conflicts.push({
+        severity: "high",
+        type: "overlap",
+        message: `Hay eventos encimados: "${current.title}" y "${next.title}".`
+      });
+    } else if (minutesBetween < 90) {
+      conflicts.push({
+        severity: "medium",
+        type: "tight_connection",
+        message: `Hay poco margen entre "${current.title}" y "${next.title}" (${Math.round(minutesBetween)} min).`
+      });
+    }
+  }
+
+  const byDay = {};
+  for (const event of events) {
+    const day = event.start.toISOString().split("T")[0];
+    byDay[day] = byDay[day] || [];
+    byDay[day].push(event);
+  }
+
+  for (const [day, dayEvents] of Object.entries(byDay)) {
+    if (dayEvents.length >= 4) {
+      conflicts.push({
+        severity: "low",
+        type: "busy_day",
+        message: `El día ${day} tiene ${dayEvents.length} eventos. Puede sentirse cargado.`
+      });
+    }
+  }
+
+  return conflicts;
+}
+
 function detectIntentLocal(question) {
   const q = question.toLowerCase();
 
@@ -466,6 +589,8 @@ if (analysis.needs_clarification) {
 
 const context = buildContextByIntent(tripJson, analysis, timeZone);
 const intent = analysis.intent || "general";
+const conflicts = detectBasicConflicts(tripJson);
+context.detected_conflicts = conflicts;
 
         const response = await fetch("https://api.deepseek.com/chat/completions", {
           method: "POST",
@@ -491,6 +616,7 @@ const intent = analysis.intent || "general";
                             - menciona cuándo inicia el viaje
                             - sugiere ayuda útil (preparación, documentos, recomendaciones)
                             - evita sonar técnico o redundante
+                          Si el contexto incluye detected_conflicts, revísalos y menciona solo los relevantes para la pregunta del cliente.
               `
               },
               {
