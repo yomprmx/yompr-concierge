@@ -128,6 +128,15 @@ function resolveDateReference(analysis, tripJson) {
 }
 
 function buildContextByIntent(tripJson, analysis) {
+  const intent = analysis.intent || "general";
+  const scope = analysis.scope || "all";
+  const city = normalizeText(analysis.city || "");
+
+  const base = {
+    trip: tripJson.trip || {},
+    metadata: tripJson.metadata || {}
+  };
+
   const date = resolveDateReference(analysis, tripJson);
 
 if (date) {
@@ -147,15 +156,7 @@ if (date) {
   };
 }
   
-  const intent = analysis.intent || "general";
-  const scope = analysis.scope || "all";
-  const city = normalizeText(analysis.city || "");
-
-  const base = {
-    trip: tripJson.trip || {},
-    metadata: tripJson.metadata || {}
-  };
-
+  
   if (scope === "city" && city) {
     const matchesCity = (text) => normalizeText(text).includes(city);
 
