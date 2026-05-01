@@ -104,15 +104,6 @@ function detectBasicConflicts(tripJson) {
 
     const currentEnd = current.end || current.start;
     const minutesBetween = (next.start - currentEnd) / 60000;
-    // Caso crítico: un vuelo sale antes del check-out del hotel
-if (current.type === "flight" && next.type === "hotel_checkout") {
-  conflicts.push({
-    severity: "high",
-    type: "flight_before_checkout",
-    message: `El vuelo "${current.title}" ocurre antes del check-out "${next.title}". Esto requiere revisar el orden del itinerario o hacer check-out antes de salir al aeropuerto.`
-  });
-  continue;
-}
 
     if (minutesBetween < 0) {
       conflicts.push({
@@ -660,6 +651,7 @@ const needsThinking =
                           Si el contexto incluye detected_conflicts, revísalos y menciona solo los relevantes para la pregunta del cliente.
                           Cuando detected_conflicts indique insufficient_buffer antes de un vuelo, trátalo como un riesgo importante. No lo minimices. Explica que además del horario del vuelo hay que considerar traslado al aeropuerto, documentación, seguridad y abordaje.
                           Cuando respondas listas de conflictos, termina siempre con una conclusión breve y no dejes numeraciones incompletas.
+                          El check-out del hotel es una hora límite, no una cita fija. Si un vuelo sale antes del check-out estándar, no lo trates como conflicto crítico; solo recomienda hacer check-out anticipado y preparar equipaje con tiempo.
               `
               },
               {
