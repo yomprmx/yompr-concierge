@@ -463,8 +463,7 @@ if (url.pathname === "/admin/logs") {
       <td>${log.thinking_enabled ? "🧠 Sí" : "—"}</td>
       <td>${log.approximate_context_tokens || ""}</td>
       <td>${log.question || ""}</td>
-      <td>${log.answer || ""}</td>
-    </tr>
+      <td style="max-width: 400px; white-space: pre-wrap;">${log.answer || ""}</td>    </tr>
   `).join("");
 
   return new Response(`
