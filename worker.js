@@ -93,7 +93,7 @@ function normalizeText(value) {
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\\u0300
-  };
+  
 
   if (intent === "hotel") {
     return { ...base, hotelVouchers: tripJson.hotelVouchers || [] };
