@@ -969,6 +969,7 @@ await env.CHAT_LOGS.put(logId, JSON.stringify({
   answer: answer,
   context_characters: contextText.length,
   approximate_context_tokens: approximateTokens,
+  analysis_thinking_enabled: true,
   thinking_enabled: needsThinking,
   transport_used: transportUsed,
   transport_duration_min: transportInfo?.duration_min || null,
