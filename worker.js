@@ -606,43 +606,6 @@ function buildContextByIntent(tripJson, analysis, timeZone) {
   };
 }
 
-function buildGeocodeQueries(query) {
-  const original = String(query || "").trim();
-  if (!original) return [];
-
-  const queries = [original];
-
-  const iataMatch = original.match(/\b[A-Z]{3}\b/);
-  if (iataMatch) {
-    const code = iataMatch[0];
-
-    queries.push(`${code} Airport`);
-    queries.push(`${code} airport`);
-    queries.push(`${code} Airport, Europe`);
-  }
-
-  let cleaned = original
-    .replace(/\([^)]*\)/g, " ")
-    .replace(/\bAeropuerto de\b/gi, "Airport")
-    .replace(/\bAeropuerto\b/gi, "Airport")
-    .replace(/\bAéroport de\b/gi, "Airport")
-    .replace(/\bAéroport\b/gi, "Airport")
-    .replace(/\bAirport de\b/gi, "Airport")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (cleaned && cleaned !== original) {
-    queries.push(cleaned);
-  }
-
-  const withoutAccents = normalizeText(original);
-  if (withoutAccents && withoutAccents !== normalizeText(cleaned)) {
-    queries.push(withoutAccents);
-  }
-
-  return [...new Set(queries.filter(Boolean))];
-}
-
 function uniqueValues(values) {
   return [...new Set(values.filter(Boolean).map(v => String(v).trim()).filter(Boolean))];
 }
@@ -923,8 +886,8 @@ const destinationCoords = await geocode(destination, {
     geocode_origin_display_name: originCoords.display_name || null,
     geocode_destination_display_name: destinationCoords.display_name || null,
     options,
-    geocode_origin_attempted_query: originCoords.attempted_query || null,
-geocode_destination_attempted_query: destinationCoords.attempted_query || null
+    geocode_origin_attempted_query: log.geocode_origin_attempted_query || null,
+geocode_destination_attempted_query: log.geocode_destination_attempted_query || null
   };
 }
 
@@ -1022,6 +985,8 @@ export default {
     <td style="max-width: 180px; white-space: pre-wrap;">${escapeHtml(log.place_name || "")}</td>
     <td>${escapeHtml(log.geocode_origin || "")}</td>
     <td>${escapeHtml(log.geocode_destination || "")}</td>
+    <td>${escapeHtml(log.geocode_origin_attempted_query || "")}</td>
+<td>${escapeHtml(log.geocode_destination_attempted_query || "")}</td>
     <td style="max-width: 260px; white-space: pre-wrap;">${escapeHtml(log.question || "")}</td>
     <td style="max-width: 480px; white-space: pre-wrap;">${escapeHtml(log.answer || "")}</td>
   </tr>
@@ -1060,6 +1025,8 @@ export default {
         <th>Place name</th>
         <th>Geocode origin</th>
         <th>Geocode destination</th>
+        <th>Origin attempted</th>
+<th>Destination attempted</th>
         <th>Pregunta</th>
         <th>Respuesta</th>
       </tr>
@@ -1406,6 +1373,8 @@ question
   place_name: analysis.place_name || null,
   geocode_origin: transportInfo?.geocode_origin_display_name || null,
   geocode_destination: transportInfo?.geocode_destination_display_name || null,
+  geocode_origin_attempted_query: transportInfo?.geocode_origin_attempted_query || null,
+  geocode_destination_attempted_query: transportInfo?.geocode_destination_attempted_query || null,
 
   used_transport_in_answer:
     answer.includes("estimado") ||
