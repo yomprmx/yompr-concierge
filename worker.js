@@ -279,8 +279,16 @@ function postProcessAnalysis(analysis) {
   };
 }
 
-async function classifyIntentWithDeepSeek(question, env, tripJson) {
-  const tripSummary = buildTripSummaryForClassifier(tripJson);
+async function classifyIntentWithDeepSeek(question, env, tripJson, conversationHistory = []) {
+  const cleanHistory = Array.isArray(conversationHistory)
+    ? conversationHistory
+        .filter(m =>
+          m &&
+          (m.role === "user" || m.role === "assistant") &&
+          typeof m.content === "string"
+        )
+        .slice(-8)
+    : [];
 
   const response = await fetch("https://api.deepseek.com/chat/completions", {
     method: "POST",
@@ -292,18 +300,22 @@ async function classifyIntentWithDeepSeek(question, env, tripJson) {
       model: "deepseek-v4-flash",
       thinking: { type: "enabled" },
       temperature: 0,
-      max_tokens: 900,
+      max_tokens: 1600,
       messages: [
         {
           role: "system",
           content: `
-Eres un clasificador de intención para un concierge de viajes.
+Eres un clasificador avanzado para un concierge de viajes.
 
-Tu tarea es leer:
-1. El resumen estructurado del viaje.
-2. La pregunta del usuario.
+Tu trabajo NO es responder al cliente.
+Tu trabajo es analizar la pregunta y el viaje completo para devolver SOLO JSON válido.
 
-Responde SOLO JSON válido con este formato exacto:
+Debes usar:
+1. El JSON completo del viaje.
+2. El historial reciente de la conversación.
+3. La pregunta actual.
+
+Formato exacto de respuesta:
 
 {
   "intent": "hotel | flight | activity | transfer | weather | nearby_places | emergency | itinerary | recommendation | route | general",
@@ -322,27 +334,30 @@ Responde SOLO JSON válido con este formato exacto:
   "clarification_question": "pregunta corta si falta un dato indispensable"
 }
 
-Criterios:
-- Clasifica como "route" cuando el usuario pregunte por distancia, duración, cómo llegar, transporte, movilidad, traslados, cercanía o alternativas para moverse.
-- Usa el resumen del viaje para identificar hotel, ciudad, aeropuerto, estación, actividad o punto relevante.
-- Para rutas, intenta construir origin_query y destination_query usando datos del viaje y la pregunta.
-- origin_query y destination_query deben ser textos útiles para geocodificación, por ejemplo "Hotel X, dirección, ciudad" o "Charles de Gaulle Airport".
-- Si el usuario pregunta por llegar al hotel desde un aeropuerto y el viaje contiene vuelo/hotel, usa el aeropuerto y hotel correctos.
-- Si el usuario pregunta por moverse desde el hotel a un lugar, usa el hotel como origen y el lugar como destino.
-- Si el usuario pregunta por distancia desde un lugar hacia el hotel, usa el lugar como origen y el hotel como destino.
-- Si el usuario pide alternativas generales de movilidad en una ciudad o desde un hotel, pero no da destino concreto, puede ser route con origin_query y destination_query=null.
-- Solo pide aclaración si falta un dato indispensable y no hay forma razonable de responder con el viaje disponible.
-- No inventes hoteles, direcciones, vuelos ni fechas.
-- No confundas un lugar con una ciudad solo porque comparten nombre.
+Principios:
+- No respondas al usuario.
+- No inventes datos.
+- Usa el JSON completo del viaje para entender el orden real del itinerario.
+- Usa vuelos, hoteles, check-in, check-out, fechas y ciudades para inferir desde dónde sale el viajero y hacia dónde va.
+- Si el usuario dice algo como "cuando salga de mi hotel para ir a X", identifica el hotel correcto según la etapa previa del itinerario, no necesariamente el hotel de X.
+- Si el usuario dice "cuando llegue a X", normalmente quiere ruta desde aeropuerto/estación/lugar de llegada hacia su hotel en X.
+- Si el usuario dice "cuando vaya a X", revisa el itinerario para identificar el trayecto hacia X y el hotel/lugar de salida anterior.
+- Si hay una ruta calculable, llena origin_query y destination_query con textos completos y geocodificables.
+- Para hoteles, usa nombre + dirección + ciudad si están disponibles.
+- Para aeropuertos, usa código IATA + nombre o ciudad si está disponible.
+- Para estaciones, terminales o puntos de interés, usa el nombre del lugar más ciudad.
+- Solo pide aclaración si de verdad falta un dato indispensable y no puede inferirse del viaje.
+- Si es una pregunta general de movilidad sin destino concreto, puedes usar intent="route" pero origin_query o destination_query pueden ser null.
 - Responde SOLO JSON válido.
 `
         },
+        ...cleanHistory,
         {
           role: "user",
           content:
-            "Resumen del viaje:\n" +
-            JSON.stringify(tripSummary) +
-            "\n\nPregunta del usuario:\n" +
+            "JSON completo del viaje:\n" +
+            JSON.stringify(tripJson) +
+            "\n\nPregunta actual del usuario:\n" +
             question
         }
       ]
@@ -884,8 +899,12 @@ export default {
 
         const tripJson = JSON.parse(tripText);
 
-        let analysis = await classifyIntentWithDeepSeek(question, env, tripJson);
-
+let analysis = await classifyIntentWithDeepSeek(
+  question,
+  env,
+  tripJson,
+  conversationHistory
+);
         if (analysis.needs_clarification) {
           return Response.json({
             answer: analysis.clarification_question || "¿Podrías darme un poco más de detalle para ayudarte mejor?",
@@ -999,6 +1018,10 @@ Rutas:
 - Si el usuario pregunta “está cerca”, responde con distancia y duración caminando cuando estén disponibles.
 - Si transport_info.type = "route_without_destination", explica opciones generales y pide destino solo si hace falta para calcular tiempo exacto.
 - Si transport_info.type = "geocoding_failed", no inventes distancia; ofrece abrir el enlace de Google Maps o pedir una dirección más precisa.
+- Si el análisis estructurado incluye origin_query y destination_query, respétalos como la interpretación principal de la ruta.
+- No cambies la ciudad o el hotel de origen si origin_query ya fue resuelto por el clasificador.
+- Si el usuario habla de "ir a", "salir hacia", "cuando vaya a" otra ciudad, revisa el JSON completo para ubicar la etapa previa del viaje.
+- Antes de responder rutas entre ciudades o cambios de destino, verifica la secuencia real del viaje en el JSON completo.
 `
               },
               ...cleanHistory,
@@ -1009,10 +1032,12 @@ Rutas:
                   JSON.stringify(analysis) +
                   "\n\nZona horaria del cliente: " + (timeZone || "desconocida") +
                   "\nFecha local del cliente: " + (localDate || "desconocida") +
-                  "\n\nContexto actualizado del viaje:\n" +
-                  JSON.stringify(context) +
-                  "\n\nPregunta actual del cliente:\n" +
-                  question
+                 "\\n\\nContexto filtrado del viaje:\\n" +
+JSON.stringify(context) +
+"\\n\\nJSON completo del viaje para verificar secuencia, fechas y traslados:\\n" +
+JSON.stringify(tripJson) +
+"\\n\\nPregunta actual del cliente:\\n" +
+question
               }
             ]
           })
