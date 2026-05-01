@@ -1,3 +1,107 @@
+function detectIntentLocal(question) {
+  const q = question.toLowerCase();
+
+  const intents = {
+    hotel: ["hotel", "hospedaje", "alojamiento", "quedo", "quedar", "dormir", "habitación", "check in", "check-in"],
+    flight: ["vuelo", "avión", "aeropuerto", "aerolínea", "despega", "sale mi vuelo", "maleta", "equipaje", "terminal"],
+    activity: ["actividad", "tour", "excursión", "boleto", "entrada", "visitar", "evento"],
+    transfer: ["traslado", "chofer", "pickup", "recogida", "transporte"],
+    emergency: ["emergencia", "cancelaron", "perdí", "no aparece", "ayuda urgente", "pasaporte", "accidente"],
+    weather: ["clima", "llover", "lluvia", "temperatura", "frío", "calor"],
+    nearby_places: ["cerca", "restaurante", "farmacia", "cajero", "supermercado", "comer"]
+  };
+
+  for (const [intent, words] of Object.entries(intents)) {
+    if (words.some(word => q.includes(word))) return intent;
+  }
+
+  return "unknown";
+}
+
+async function classifyIntentWithDeepSeek(question, env) {
+  const response = await fetch("https://api.deepseek.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer " + env.DEEPSEEK_API_KEY,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: "deepseek-v4-flash",
+      thinking: { type: "disabled" },
+      temperature: 0,
+      max_tokens: 20,
+      messages: [
+        {
+          role: "system",
+          content: "Clasifica la intención de la pregunta de un viajero. Responde SOLO una palabra de esta lista: hotel, flight, activity, transfer, weather, nearby_places, emergency, itinerary, general."
+        },
+        {
+          role: "user",
+          content: question
+        }
+      ]
+    })
+  });
+
+  const data = await response.json();
+  return (data.choices?.[0]?.message?.content || "general").trim().toLowerCase();
+}
+
+function buildContextByIntent(tripJson, intent) {
+  const base = {
+    trip: tripJson.trip || {},
+    metadata: tripJson.metadata || {}
+  };
+
+  if (intent === "hotel") {
+    return { ...base, hotelVouchers: tripJson.hotelVouchers || [] };
+  }
+
+  if (intent === "flight") {
+    return { ...base, flightReservations: tripJson.flightReservations || [] };
+  }
+
+  if (intent === "activity") {
+    return {
+      ...base,
+      serviceBookings: (tripJson.serviceBookings || []).filter(s => s.category === "activity")
+    };
+  }
+
+  if (intent === "transfer") {
+    return {
+      ...base,
+      serviceBookings: (tripJson.serviceBookings || []).filter(s => s.category === "transfer")
+    };
+  }
+
+  if (intent === "itinerary") {
+    return {
+      ...base,
+      flightReservations: tripJson.flightReservations || [],
+      hotelVouchers: tripJson.hotelVouchers || [],
+      serviceBookings: tripJson.serviceBookings || []
+    };
+  }
+
+  if (intent === "emergency") {
+    return {
+      ...base,
+      flightReservations: tripJson.flightReservations || [],
+      hotelVouchers: tripJson.hotelVouchers || [],
+      serviceBookings: tripJson.serviceBookings || []
+    };
+  }
+
+  return {
+    ...base,
+    flightReservations: tripJson.flightReservations || [],
+    hotelVouchers: tripJson.hotelVouchers || [],
+    serviceBookings: tripJson.serviceBookings || []
+  };
+}
+
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -86,40 +190,74 @@ export default {
     }
 
     if (url.pathname === "/api/chat" && request.method === "POST") {
-      try {
-        const { tripId, question } = await request.json();
+  try {
+    const { tripId, question } = await request.json();
 
-        const tripText = await env.TRIPS.get(tripId);
+    const tripText = await env.TRIPS.get(tripId);
 
-        if (!tripText) {
-          return Response.json({ answer: "No encontré el viaje." }, { status: 404 });
-        }
+    if (!tripText) {
+      return Response.json({ answer: "No encontré el viaje." }, { status: 404 });
+    }
 
-        const tripJson = JSON.parse(tripText);
+    const tripJson = JSON.parse(tripText);
 
-        const response = await fetch("https://api.deepseek.com/chat/completions", {
-          method: "POST",
-          headers: {
-            "Authorization": "Bearer " + env.DEEPSEEK_API_KEY,
-            "Content-Type": "application/json"
+    let intent = detectIntentLocal(question);
+
+    if (intent === "unknown") {
+      intent = await classifyIntentWithDeepSeek(question, env);
+    }
+
+    const context = buildContextByIntent(tripJson, intent);
+
+    const response = await fetch("https://api.deepseek.com/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + env.DEEPSEEK_API_KEY,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "deepseek-v4-flash",
+        thinking: { type: "disabled" },
+        temperature: 0.3,
+        max_tokens: 700,
+        messages: [
+          {
+            role: "system",
+            content: "Eres Yompr Personal Concierge, un asistente de viaje premium. Responde en español claro, breve y útil. Usa solo la información del viaje proporcionada. Si no sabes algo con certeza, dilo. No inventes datos. Si detectas una emergencia o problema serio, recomienda contactar a Rigo."
           },
-          body: JSON.stringify({
-            model: "deepseek-v4-flash",
-            thinking: { type: "disabled" },
-            temperature: 0.3,
-            max_tokens: 700,
-            messages: [
-              {
-                role: "system",
-                content: "Eres Yompr Personal Concierge, un asistente de viaje premium. Responde en español claro, breve y útil. Se amable, contenido, elegante, elocuente. Usa solo la información del viaje proporcionada. Si no sabes algo con certeza, dilo. No inventes datos. Si detectas una emergencia o problema serio, recomienda contactar a Rigo."
-              },
-              {
-                role: "user",
-                content: "Viaje:\\n" + JSON.stringify(tripJson) + "\\n\\nPregunta:\\n" + question
-              }
-            ]
-          })
-        });
+          {
+            role: "user",
+            content:
+              "Intención detectada: " + intent +
+              "\\n\\nContexto del viaje:\\n" +
+              JSON.stringify(context) +
+              "\\n\\nPregunta del cliente:\\n" +
+              question
+          }
+        ]
+      })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return Response.json({
+        answer: "Error de DeepSeek: " + JSON.stringify(data)
+      }, { status: 500 });
+    }
+
+    const answer = data.choices?.[0]?.message?.content || "No pude responder.";
+
+    return Response.json({
+      answer,
+      intent
+    });
+  } catch (e) {
+    return Response.json({
+      answer: "Error al procesar la pregunta: " + String(e)
+    }, { status: 500 });
+  }
+});
 
         const data = await response.json();
 
