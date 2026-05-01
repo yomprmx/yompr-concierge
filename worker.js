@@ -606,29 +606,144 @@ function buildContextByIntent(tripJson, analysis, timeZone) {
   };
 }
 
-async function geocode(query) {
+function buildGeocodeQueries(query) {
+  const original = String(query || "").trim();
+  if (!original) return [];
+
+  const queries = [original];
+
+  const iataMatch = original.match(/\b[A-Z]{3}\b/);
+  if (iataMatch) {
+    const code = iataMatch[0];
+
+    queries.push(`${code} Airport`);
+    queries.push(`${code} airport`);
+    queries.push(`${code} Airport, Europe`);
+  }
+
+  let cleaned = original
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/\bAeropuerto de\b/gi, "Airport")
+    .replace(/\bAeropuerto\b/gi, "Airport")
+    .replace(/\bAéroport de\b/gi, "Airport")
+    .replace(/\bAéroport\b/gi, "Airport")
+    .replace(/\bAirport de\b/gi, "Airport")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (cleaned && cleaned !== original) {
+    queries.push(cleaned);
+  }
+
+  const withoutAccents = normalizeText(original);
+  if (withoutAccents && withoutAccents !== normalizeText(cleaned)) {
+    queries.push(withoutAccents);
+  }
+
+  return [...new Set(queries.filter(Boolean))];
+}
+
+function uniqueValues(values) {
+  return [...new Set(values.filter(Boolean).map(v => String(v).trim()).filter(Boolean))];
+}
+
+function simplifyPlaceQuery(query) {
+  return String(query || "")
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/[“”"']/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function removeGenericPlaceWords(query) {
+  return String(query || "")
+    .replace(/\b(aeropuerto|airport|aéroport|flughafen|aeroporto)\b/gi, " ")
+    .replace(/\b(estacion|estación|station|gare|stazione|terminal|termini)\b/gi, " ")
+    .replace(/\b(hotel|hostal|hostel|resort|apartment|apartamento)\b/gi, " ")
+    .replace(/\b(de|del|la|el|le|les|the|di|da|do|du)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildGeocodeQueries(query, city = null, country = null) {
+  const original = String(query || "").trim();
+  if (!original) return [];
+
+  const simplified = simplifyPlaceQuery(original);
+  const withoutGenericWords = removeGenericPlaceWords(simplified);
+
+  const cityText = city ? String(city).trim() : "";
+  const countryText = country ? String(country).trim() : "";
+
+  const baseQueries = [
+    original,
+    simplified,
+    withoutGenericWords
+  ];
+
+  const expandedQueries = [];
+
+  for (const q of baseQueries) {
+    if (!q) continue;
+
+    expandedQueries.push(q);
+
+    if (cityText && !normalizeText(q).includes(normalizeText(cityText))) {
+      expandedQueries.push(`${q}, ${cityText}`);
+    }
+
+    if (countryText && !normalizeText(q).includes(normalizeText(countryText))) {
+      expandedQueries.push(`${q}, ${countryText}`);
+    }
+
+    if (
+      cityText &&
+      countryText &&
+      !normalizeText(q).includes(normalizeText(cityText))
+    ) {
+      expandedQueries.push(`${q}, ${cityText}, ${countryText}`);
+    }
+  }
+
+  return uniqueValues(expandedQueries);
+}
+
+async function geocode(query, options = {}) {
   if (!query) return null;
 
-  const url =
-    `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}` +
-    `&format=json&limit=1`;
-
-  const res = await fetch(url, {
-    headers: {
-      "User-Agent": "Yompr Concierge"
-    }
-  });
-
-  const data = await res.json();
-
-  if (!Array.isArray(data) || !data.length) return null;
-
-  return {
+  const queries = buildGeocodeQueries(
     query,
-    display_name: data[0].display_name || null,
-    lat: parseFloat(data[0].lat),
-    lon: parseFloat(data[0].lon)
-  };
+    options.city || null,
+    options.country || null
+  );
+
+  for (const candidate of queries) {
+    try {
+      const url =
+        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(candidate)}` +
+        `&format=json&limit=1&addressdetails=1`;
+
+      const res = await fetch(url, {
+        headers: {
+          "User-Agent": "Yompr Concierge"
+        }
+      });
+
+      const data = await res.json();
+
+      if (Array.isArray(data) && data.length) {
+        return {
+          query,
+          attempted_query: candidate,
+          display_name: data[0].display_name || null,
+          lat: parseFloat(data[0].lat),
+          lon: parseFloat(data[0].lon)
+        };
+      }
+    } catch (_) {}
+  }
+
+  return null;
 }
 
 async function getRoute(from, to, mode = "driving") {
@@ -724,8 +839,15 @@ async function enrichWithTransportInfo(tripJson, analysis) {
     };
   }
 
-  const originCoords = await geocode(origin);
-  const destinationCoords = await geocode(destination);
+const originCoords = await geocode(origin, {
+  city: analysis.city || null,
+  country: null
+});
+
+const destinationCoords = await geocode(destination, {
+  city: analysis.city || null,
+  country: null
+});
 
   if (!originCoords || !destinationCoords) {
     return {
@@ -800,7 +922,9 @@ async function enrichWithTransportInfo(tripJson, analysis) {
     maps_link: primary?.maps_link || buildGoogleMapsLink(origin, destination),
     geocode_origin_display_name: originCoords.display_name || null,
     geocode_destination_display_name: destinationCoords.display_name || null,
-    options
+    options,
+    geocode_origin_attempted_query: originCoords.attempted_query || null,
+geocode_destination_attempted_query: destinationCoords.attempted_query || null
   };
 }
 
@@ -840,7 +964,10 @@ async function saveChatLog(env, log) {
       error_stage: log.error_stage || null,
       raw_error: log.raw_error || null,
 
-      used_transport_in_answer: log.used_transport_in_answer || false
+      used_transport_in_answer: log.used_transport_in_answer || false,
+
+      geocode_origin_attempted_query: transportInfo?.geocode_origin_attempted_query || null,
+geocode_destination_attempted_query: transportInfo?.geocode_destination_attempted_query || null
     }));
   } catch (e) {
     console.log("Error saving chat log:", String(e));
