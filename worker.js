@@ -3,7 +3,7 @@ function detectIntentLocal(question) {
 
   const intents = {
     hotel: ["hotel", "hospedaje", "alojamiento", "quedo", "quedar", "dormir", "habitación", "habitacion", "check in", "check-in", "pernoctar"],
-    flight: ["vuelo", "avión", "avion", "aeropuerto", "aerolínea", "aerolinea", "despega", "sale mi vuelo", "maleta", "equipaje", "terminal"],
+    flight: ["llegamos", "llega", "llegar", "salimos", "salir", "hora llegamos", "hora llega", "vuelo", "avión", "avion", "aeropuerto", "aerolínea", "aerolinea", "despega", "sale mi vuelo", "maleta", "equipaje", "terminal"],
     activity: ["actividad", "tour", "excursión", "excursion", "boleto", "entrada", "visitar", "evento"],
     transfer: ["traslado", "chofer", "pickup", "recogida", "transporte"],
     emergency: ["emergencia", "cancelaron", "perdí", "perdi", "no aparece", "ayuda urgente", "pasaporte", "accidente"],
@@ -47,8 +47,10 @@ Analiza la pregunta del cliente y responde SOLO en JSON con este formato:
 
 Reglas:
 - Si NO estás seguro de la intención → confidence < 0.7
-- Si confidence < 0.7 → needs_clarification = true
+- Si la pregunta puede responderse revisando el itinerario completo, usa intent = "itinerary" y needs_clarification = false.
+- Solo pide aclaración si hay varias interpretaciones incompatibles y no se puede resolver con el itinerario.
 - Si la pregunta es ambigua → pide aclaración
+- Preguntas naturales como "¿a qué hora llegamos a Roma?", "¿cuándo salimos?", "¿qué tenemos primero?", "¿dónde llegamos?" deben clasificarse como itinerary o flight, no pedir aclaración.
 - La aclaración debe ser breve, clara y natural
 - No inventes información
 - Responde SOLO JSON válido
