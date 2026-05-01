@@ -69,6 +69,22 @@ function collectTripEvents(tripJson) {
     .sort((a, b) => a.start - b.start);
 }
 
+function requiredBufferMinutes(current, next) {
+  if (next.type === "flight") {
+    return 180; // mínimo realista: traslado + llegada anticipada al aeropuerto
+  }
+
+  if (next.type === "train") {
+    return 60;
+  }
+
+  if (next.type === "activity") {
+    return 45;
+  }
+
+  return 60;
+}
+
 function detectBasicConflicts(tripJson) {
   const events = collectTripEvents(tripJson);
   const conflicts = [];
@@ -92,14 +108,17 @@ function detectBasicConflicts(tripJson) {
         type: "overlap",
         message: `Hay eventos encimados: "${current.title}" y "${next.title}".`
       });
-    } else if (minutesBetween < 90) {
-      conflicts.push({
-        severity: "medium",
-        type: "tight_connection",
-        message: `Hay poco margen entre "${current.title}" y "${next.title}" (${Math.round(minutesBetween)} min).`
-      });
-    }
+   } else {
+  const required = requiredBufferMinutes(current, next);
+
+  if (minutesBetween < required) {
+    conflicts.push({
+      severity: minutesBetween < required / 2 ? "high" : "medium",
+      type: "insufficient_buffer",
+      message: `Tiempo insuficiente entre "${current.title}" y "${next.title}": hay ${Math.round(minutesBetween)} min disponibles y se recomiendan al menos ${required} min.`
+    });
   }
+}
 
   const byDay = {};
   for (const event of events) {
@@ -617,6 +636,7 @@ context.detected_conflicts = conflicts;
                             - sugiere ayuda útil (preparación, documentos, recomendaciones)
                             - evita sonar técnico o redundante
                           Si el contexto incluye detected_conflicts, revísalos y menciona solo los relevantes para la pregunta del cliente.
+                          Cuando detected_conflicts indique insufficient_buffer antes de un vuelo, trátalo como un riesgo importante. No lo minimices. Explica que además del horario del vuelo hay que considerar traslado al aeropuerto, documentación, seguridad y abordaje.
               `
               },
               {
