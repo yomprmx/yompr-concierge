@@ -670,22 +670,6 @@ const intent = analysis.intent || "general";
 const conflicts = detectBasicConflicts(tripJson);
 context.detected_conflicts = conflicts;
 
-        let transportInfo = null;
-let transportUsed = false;
-let transportError = null;
-
-try {
-  transportInfo = await enrichWithTransportInfo(tripJson);
-
-  if (transportInfo) {
-    context.transport_info = transportInfo;
-    transportUsed = true;
-  }
-} catch (e) {
-  transportUsed = false;
-  transportError = String(e);
-}
-
 let transportInfo = null;
 let transportUsed = false;
 
