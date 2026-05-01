@@ -670,8 +670,20 @@ const intent = analysis.intent || "general";
 const conflicts = detectBasicConflicts(tripJson);
 context.detected_conflicts = conflicts;
 
-        const transportInfo = await enrichWithTransportInfo(tripJson);
+let transportInfo = null;
+let transportUsed = false;
 
+try {
+  transportInfo = await enrichWithTransportInfo(tripJson);
+
+  if (transportInfo) {
+    context.transport_info = transportInfo;
+    transportUsed = true;
+  }
+} catch (e) {
+  transportUsed = false;
+}
+        
 if (transportInfo) {
   context.transport_info = transportInfo;
 }
@@ -734,6 +746,7 @@ Si se incluye transport_info:
 - menciona duración estimada del traslado
 - sugiere hora de salida considerando el vuelo
 - incluye el link de Google Maps si es útil
+- Si utilizas información de transport_info, menciona explícitamente que es un tiempo estimado calculado. 
               `
               },
               {
@@ -776,7 +789,14 @@ await env.CHAT_LOGS.put(logId, JSON.stringify({
   answer: answer,
   context_characters: contextText.length,
   approximate_context_tokens: approximateTokens,
-  thinking_enabled: needsThinking
+  thinking_enabled: needsThinking,
+  transport_used: transportUsed,
+transport_duration_min: transportInfo?.duration_min || null,
+transport_distance_km: transportInfo?.distance_km || null,
+transport_origin: transportInfo?.origin || null,
+transport_destination: transportInfo?.destination || null,
+  transport_error: e ? String(e) : null,
+  used_transport_in_answer: answer.includes("traslado estimado")
 }));
 
 return Response.json({ answer, intent });
