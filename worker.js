@@ -119,7 +119,7 @@ function detectBasicConflicts(tripJson) {
     });
   }
 }
-
+}
   const byDay = {};
   for (const event of events) {
     const day = event.start.toISOString().split("T")[0];
