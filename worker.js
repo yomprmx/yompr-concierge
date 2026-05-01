@@ -171,6 +171,11 @@ export default {
     }
 
     if (url.pathname === "/admin") {
+      const password = url.searchParams.get("key");
+
+if (password !== "Rigo090490!") {
+  return new Response("No autorizado", { status: 401 });
+}
       return new Response(`
 <!DOCTYPE html>
 <html>
