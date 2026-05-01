@@ -946,26 +946,9 @@ export default {
 
         const tripJson = JSON.parse(tripText);
 
-        let localIntent = detectIntentLocal(question);
-        let analysis;
+let analysis = await classifyIntentWithDeepSeek(question, env);
 
-        if (localIntent === "unknown") {
-          analysis = await classifyIntentWithDeepSeek(question, env);
-        } else {
-          analysis = {
-            intent: localIntent,
-            scope: "all",
-            city: null,
-            date_reference: null,
-            tool_needed: "none",
-            route_direction: "unknown",
-            airport_code: null,
-            needs_clarification: false,
-            clarification_question: null
-          };
-        }
-
-        analysis = postProcessAnalysis(question, analysis);
+analysis = postProcessAnalysis(question, analysis);
 
         if (analysis.needs_clarification) {
           return Response.json({
