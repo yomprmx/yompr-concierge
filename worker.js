@@ -71,7 +71,11 @@ function collectTripEvents(tripJson) {
 
 function requiredBufferMinutes(current, next) {
   if (next.type === "flight") {
-    return 180; // mínimo realista: traslado + llegada anticipada al aeropuerto
+    return 180;
+  }
+
+  if (current.type === "hotel_checkout" && next.type === "flight") {
+    return 180;
   }
 
   if (next.type === "train") {
@@ -84,7 +88,6 @@ function requiredBufferMinutes(current, next) {
 
   return 60;
 }
-
 function detectBasicConflicts(tripJson) {
   const events = collectTripEvents(tripJson);
   const conflicts = [];
@@ -101,6 +104,15 @@ function detectBasicConflicts(tripJson) {
 
     const currentEnd = current.end || current.start;
     const minutesBetween = (next.start - currentEnd) / 60000;
+    // Caso crítico: un vuelo sale antes del check-out del hotel
+if (current.type === "flight" && next.type === "hotel_checkout") {
+  conflicts.push({
+    severity: "high",
+    type: "flight_before_checkout",
+    message: `El vuelo "${current.title}" ocurre antes del check-out "${next.title}". Esto requiere revisar el orden del itinerario o hacer check-out antes de salir al aeropuerto.`
+  });
+  continue;
+}
 
     if (minutesBetween < 0) {
       conflicts.push({
