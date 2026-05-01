@@ -544,11 +544,12 @@ Responde SOLO JSON válido con este formato:
   "date_reference": "hoy | mañana | fecha específica | null",
   "tool_needed": "none | route | places | weather",
   "route_direction": "airport_to_hotel | hotel_to_airport | hotel_to_place | place_to_hotel | unknown",
+  "route_mode": "walking | driving | transit | all",
   "airport_code": "código IATA si aplica, si no null",
+  "place_name": "nombre del lugar si aplica, si no null",
   "confidence": 0-1,
   "needs_clarification": true/false,
-  "clarification_question": "pregunta corta si hace falta aclarar",
-  "place_name": "nombre del lugar si aplica, si no null"
+  "clarification_question": "pregunta corta si hace falta aclarar"
 }
 
 Reglas:
@@ -567,6 +568,10 @@ Reglas:
 - Si el usuario pregunta por distancia o ruta entre el hotel y una estación, museo, restaurante, punto de interés o lugar mencionado, llena place_name con ese lugar.
 - Si pregunta si un lugar está cerca del hotel, usa route_direction="place_to_hotel" o "hotel_to_place" según corresponda.
 - No limites place_name a ciudades específicas.
+- Si el usuario pregunta por transporte público, metro, tren, bus, taxi, Uber, caminando, a pie, distancia, ruta o cómo llegar, usa intent="route" y tool_needed="route".
+- Si pregunta "transporte público para llegar al hotel", interpreta que quiere llegar desde el punto relevante anterior del viaje hacia el hotel. Si el contexto es llegada al destino o aeropuerto, usa route_direction="airport_to_hotel".
+- Si pregunta "¿está cerca del hotel?", "¿cómo llego desde ahí?" o menciona una estación, museo, restaurante, terminal o punto de interés, usa route_direction="place_to_hotel" o "hotel_to_place" y llena place_name.
+- No clasifiques como hotel solo porque aparece la palabra "hotel"; si la pregunta trata sobre llegar, distancia, transporte o ubicación, clasifica como route.
 `
         },
         {
