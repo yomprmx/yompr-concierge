@@ -36,25 +36,31 @@ async function classifyIntentWithDeepSeek(question, env) {
          content: `
 Eres un analista de intención para un concierge de viajes.
 
-Analiza la pregunta del cliente y responde SOLO en JSON con este formato:
+Analiza la pregunta del cliente y responde SOLO JSON válido con este formato:
 
 {
-  "intent": "hotel | flight | activity | transfer | weather | nearby_places | emergency | itinerary | general",
+  "intent": "hotel | flight | activity | transfer | weather | nearby_places | emergency | itinerary | recommendation | general",
+  "scope": "all | city | date | next_event | specific_item | trip_analysis | unknown",
+  "city": "nombre de ciudad si aplica, si no null",
+  "date_reference": "hoy | mañana | fecha específica | null",
   "confidence": 0-1,
   "needs_clarification": true/false,
-  "clarification_question": "pregunta corta para aclarar"
+  "clarification_question": "pregunta corta si hace falta aclarar"
 }
 
 Reglas:
-- Si NO estás seguro de la intención → confidence < 0.7
-- Si la pregunta puede responderse revisando el itinerario completo, usa intent = "itinerary" y needs_clarification = false.
-- Solo pide aclaración si hay varias interpretaciones incompatibles y no se puede resolver con el itinerario.
-- Si la pregunta es ambigua → pide aclaración
-- Preguntas naturales como "¿a qué hora llegamos a Roma?", "¿cuándo salimos?", "¿qué tenemos primero?", "¿dónde llegamos?" deben clasificarse como itinerary o flight, no pedir aclaración.
-- La aclaración debe ser breve, clara y natural
-- No inventes información
-- Responde SOLO JSON válido
-`},
+- Si el cliente pregunta por una ciudad específica, usa scope = "city".
+- Si pregunta por días, plan, itinerario, estancia o qué hará en una ciudad, usa intent = "itinerary".
+- Si menciona una ciudad como París, Roma, Venecia o Barcelona, NO pidas aclaración.
+- Si la pregunta puede resolverse revisando el itinerario completo, NO pidas aclaración.
+- Solo pide aclaración si realmente hay varias interpretaciones incompatibles.
+- Responde SOLO JSON válido.
+- Si la pregunta requiere comparar varias ciudades, días, horarios o consecuencias del día siguiente, usa:
+  intent = "recommendation"
+  scope = "trip_analysis"
+  needs_clarification = false
+`
+        },
         {
           role: "user",
           content: question
@@ -82,10 +88,11 @@ try {
 return parsed;
 }
 
-function buildContextByIntent(tripJson, intent) {
-  const base = {
-    trip: tripJson.trip || {},
-    metadata: tripJson.metadata || {}
+function normalizeText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\\u0300
   };
 
   if (intent === "hotel") {
