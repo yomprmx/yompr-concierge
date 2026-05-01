@@ -29,7 +29,7 @@ async function classifyIntentWithDeepSeek(question, env) {
       model: "deepseek-v4-flash",
       thinking: { type: "disabled" },
       temperature: 0,
-      max_tokens: 20,
+      max_tokens: 250,
       messages: [
         {
           role: "system",
@@ -96,6 +96,33 @@ function normalizeText(value) {
 }
 
 function buildContextByIntent(tripJson, analysis) {
+  const intent = analysis.intent || "general";
+  const scope = analysis.scope || "all";
+  const city = normalizeText(analysis.city || "");
+
+  const base = {
+    trip: tripJson.trip || {},
+    metadata: tripJson.metadata || {}
+  };
+
+  if (scope === "city" && city) {
+    const matchesCity = (text) => normalizeText(text).includes(city);
+
+    return {
+      ...base,
+      flightReservations: (tripJson.flightReservations || []).filter(f =>
+        JSON.stringify(f).toLowerCase().includes(city)
+      ),
+      hotelVouchers: (tripJson.hotelVouchers || []).filter(h =>
+        matchesCity(h.accommodationAddress) ||
+        matchesCity(h.accommodationName)
+      ),
+      serviceBookings: (tripJson.serviceBookings || []).filter(s =>
+        matchesCity(s.location) ||
+        JSON.stringify(s).toLowerCase().includes(city)
+      )
+    };
+  }
 
   if (intent === "hotel") {
     return { ...base, hotelVouchers: tripJson.hotelVouchers || [] };
@@ -226,26 +253,31 @@ export default {
 
         const tripJson = JSON.parse(tripText);
 
-        let intent = detectIntentLocal(question);
+let localIntent = detectIntentLocal(question);
 
-        let needsClarification = false;
-let clarificationQuestion = null;
+let analysis;
 
-if (intent === "unknown") {
-  const analysis = await classifyIntentWithDeepSeek(question, env);
-
-  intent = analysis.intent || "general";
-  needsClarification = analysis.needs_clarification;
-  clarificationQuestion = analysis.clarification_question;
+if (localIntent === "unknown") {
+  analysis = await classifyIntentWithDeepSeek(question, env);
+} else {
+  analysis = {
+    intent: localIntent,
+    scope: "all",
+    city: null,
+    needs_clarification: false,
+    clarification_question: null
+  };
 }
-        if (needsClarification) {
+
+if (analysis.needs_clarification) {
   return Response.json({
-    answer: clarificationQuestion || "¿Podrías darme un poco más de detalle para ayudarte mejor?",
+    answer: analysis.clarification_question || "¿Podrías darme un poco más de detalle para ayudarte mejor?",
     intent: "clarification"
   });
 }
 
-        const context = buildContextByIntent(tripJson, intent);
+const context = buildContextByIntent(tripJson, analysis);
+const intent = analysis.intent || "general";
 
         const response = await fetch("https://api.deepseek.com/chat/completions", {
           method: "POST",
