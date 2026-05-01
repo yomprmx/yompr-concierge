@@ -643,7 +643,7 @@ const needsThinking =
             model: "deepseek-v4-flash",
             thinking: { type: needsThinking ? "enabled" : "disabled" },
             temperature: 0.3,
-            max_tokens: 700,
+            max_tokens: needsThinking ? 1400 : 700,
             messages: [
               {
                 role: "system",
@@ -659,6 +659,7 @@ const needsThinking =
                             - evita sonar técnico o redundante
                           Si el contexto incluye detected_conflicts, revísalos y menciona solo los relevantes para la pregunta del cliente.
                           Cuando detected_conflicts indique insufficient_buffer antes de un vuelo, trátalo como un riesgo importante. No lo minimices. Explica que además del horario del vuelo hay que considerar traslado al aeropuerto, documentación, seguridad y abordaje.
+                          Cuando respondas listas de conflictos, termina siempre con una conclusión breve y no dejes numeraciones incompletas.
               `
               },
               {
