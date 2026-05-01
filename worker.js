@@ -53,6 +53,8 @@ const flightSegment = (tripJson.flightReservations || [])
     (s.departureAirport || "").toLowerCase().includes(city)
   );
 
+  const airport = flightSegment?.departureAirport;
+
   if (!hotel || !flight) return null;
 
   const hotelAddress = hotel.accommodationAddress;
@@ -693,7 +695,7 @@ let transportUsed = false;
 let transportError = null;
 
 try {
-  transportInfo = await enrichWithTransportInfo(tripJson);
+  transportInfo = await enrichWithTransportInfo(tripJson, analysis);
 
   if (transportInfo) {
     context.transport_info = transportInfo;
