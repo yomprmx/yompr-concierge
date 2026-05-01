@@ -1,3 +1,74 @@
+async function geocode(address) {
+  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&limit=1`;
+
+  const res = await fetch(url, {
+    headers: { "User-Agent": "Yompr Concierge" }
+  });
+
+  const data = await res.json();
+
+  if (!data.length) return null;
+
+  return {
+    lat: parseFloat(data[0].lat),
+    lon: parseFloat(data[0].lon)
+  };
+}
+
+async function getRoute(from, to) {
+  const url = `https://router.project-osrm.org/route/v1/driving/${from.lon},${from.lat};${to.lon},${to.lat}?overview=false`;
+
+  const res = await fetch(url);
+  const data = await res.json();
+
+  if (!data.routes?.length) return null;
+
+  const route = data.routes[0];
+
+  return {
+    distance_km: route.distance / 1000,
+    duration_min: route.duration / 60
+  };
+}
+
+function buildGoogleMapsLink(origin, destination) {
+  return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(destination)}`;
+}
+
+async function enrichWithTransportInfo(tripJson) {
+  const hotels = tripJson.hotelVouchers || [];
+  const flights = tripJson.flightReservations || [];
+
+  if (!hotels.length || !flights.length) return null;
+
+  const hotel = hotels[0];
+  const flight = flights[0]?.segments?.[0];
+
+  if (!hotel || !flight) return null;
+
+  const hotelAddress = hotel.accommodationAddress;
+  const airport = flight.departureAirport;
+
+  if (!hotelAddress || !airport) return null;
+
+  const hotelCoords = await geocode(hotelAddress);
+  const airportCoords = await geocode(airport + " airport");
+
+  if (!hotelCoords || !airportCoords) return null;
+
+  const route = await getRoute(hotelCoords, airportCoords);
+
+  if (!route) return null;
+
+  return {
+    origin: hotelAddress,
+    destination: airport,
+    duration_min: Math.round(route.duration_min),
+    distance_km: Math.round(route.distance_km),
+    maps_link: buildGoogleMapsLink(hotelAddress, airport)
+  };
+}
+
 function getEventDateTime(value) {
   if (!value) return null;
   const d = new Date(value);
@@ -599,6 +670,12 @@ const intent = analysis.intent || "general";
 const conflicts = detectBasicConflicts(tripJson);
 context.detected_conflicts = conflicts;
 
+        const transportInfo = await enrichWithTransportInfo(tripJson);
+
+if (transportInfo) {
+  context.transport_info = transportInfo;
+}
+
 const needsThinking =
   intent === "recommendation" ||
   question.toLowerCase().includes("conflicto") ||
@@ -651,6 +728,12 @@ Estilo:
 - No uses lenguaje técnico, tus conversaciones son viajeros que buscan una experiencia de viaje.
 - Si haces una lista, termínala completa y cierra con una conclusión breve.
 - Si detectas emergencia o problema serio, recomienda contactar a Rigo.
+
+Si se incluye transport_info:
+- úsalo para calcular tiempos reales
+- menciona duración estimada del traslado
+- sugiere hora de salida considerando el vuelo
+- incluye el link de Google Maps si es útil
               `
               },
               {
