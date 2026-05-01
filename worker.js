@@ -256,6 +256,91 @@ function buildTripSummaryForClassifier(tripJson) {
   };
 }
 
+function buildTripTimelineForClassifier(tripJson) {
+  const items = [];
+
+  for (const hotel of tripJson.hotelVouchers || []) {
+    items.push({
+      type: "hotel",
+      name:
+        hotel.accommodationName ||
+        hotel.hotelName ||
+        hotel.name ||
+        null,
+      address:
+        hotel.accommodationAddress ||
+        hotel.address ||
+        null,
+      city:
+        hotel.city ||
+        hotel.destination ||
+        hotel.accommodationCity ||
+        null,
+      checkIn: hotel.checkIn || null,
+      checkOut: hotel.checkOut || null,
+      raw: hotel
+    });
+  }
+
+  for (const reservation of tripJson.flightReservations || []) {
+    for (const segment of reservation.segments || []) {
+      items.push({
+        type: "flight",
+        title: `Vuelo ${segment.airlineCode || ""}${segment.flightNumber || ""}`,
+        departureAirport: segment.departureAirport || null,
+        arrivalAirport: segment.arrivalAirport || null,
+        departureDate: segment.departureDate || segment.departureDateTime || null,
+        arrivalDate: segment.arrivalDate || segment.arrivalDateTime || null,
+        raw: segment
+      });
+    }
+  }
+
+  for (const service of tripJson.serviceBookings || []) {
+    if (service.category === "transfer" && service.transfer) {
+      items.push({
+        type: "transfer",
+        pickupLocation: service.transfer.pickupLocation || null,
+        dropoffLocation: service.transfer.dropoffLocation || null,
+        date: service.transfer.date || null,
+        pickupTime: service.transfer.pickupTime || null,
+        raw: service
+      });
+    }
+
+    if (service.category === "activity" && service.activity) {
+      items.push({
+        type: "activity",
+        name: service.activity.activityName || null,
+        location: service.activity.location || service.location || null,
+        date: service.activity.date || null,
+        time: service.activity.time || null,
+        raw: service
+      });
+    }
+  }
+
+  return items.sort((a, b) => {
+    const aDate =
+      a.departureDate ||
+      a.arrivalDate ||
+      a.checkIn ||
+      a.checkOut ||
+      a.date ||
+      "";
+
+    const bDate =
+      b.departureDate ||
+      b.arrivalDate ||
+      b.checkIn ||
+      b.checkOut ||
+      b.date ||
+      "";
+
+    return String(aDate).localeCompare(String(bDate));
+  });
+}
+
 function postProcessAnalysis(analysis) {
   if (!analysis || typeof analysis !== "object") {
     analysis = {};
@@ -290,6 +375,9 @@ async function classifyIntentWithDeepSeek(question, env, tripJson, conversationH
         .slice(-8)
     : [];
 
+const tripTimeline = buildTripTimelineForClassifier(tripJson);
+const tripSummary = buildTripSummaryForClassifier(tripJson);
+  
   const response = await fetch("https://api.deepseek.com/chat/completions", {
     method: "POST",
     headers: {
@@ -341,7 +429,6 @@ Principios:
 - Usa vuelos, hoteles, check-in, check-out, fechas y ciudades para inferir desde dónde sale el viajero y hacia dónde va.
 - Si el usuario dice algo como "cuando salga de mi hotel para ir a X", identifica el hotel correcto según la etapa previa del itinerario, no necesariamente el hotel de X.
 - Si el usuario dice "cuando llegue a X", normalmente quiere ruta desde aeropuerto/estación/lugar de llegada hacia su hotel en X.
-- Si el usuario dice "cuando vaya a X", revisa el itinerario para identificar el trayecto hacia X y el hotel/lugar de salida anterior.
 - Si hay una ruta calculable, llena origin_query y destination_query con textos completos y geocodificables.
 - Para hoteles, usa nombre + dirección + ciudad si están disponibles.
 - Para aeropuertos, usa código IATA + nombre o ciudad si está disponible.
@@ -349,16 +436,37 @@ Principios:
 - Solo pide aclaración si de verdad falta un dato indispensable y no puede inferirse del viaje.
 - Si es una pregunta general de movilidad sin destino concreto, puedes usar intent="route" pero origin_query o destination_query pueden ser null.
 - Responde SOLO JSON válido.
+
+- Si el usuario dice "cuando vaya a X", "para ir a X", "cuando me vaya a X", "cuando salga hacia X" o algo equivalente, interpreta que pregunta por la salida desde la etapa anterior del itinerario hacia X.
+- Para resolverlo, usa la línea de tiempo cronológica:
+  1. Identifica la ciudad o destino X.
+  2. Encuentra el tramo de transporte que lleva hacia X, si existe.
+  3. Encuentra el hotel inmediatamente anterior a ese tramo.
+  4. Usa ese hotel como origin_query.
+  5. Usa como destination_query el aeropuerto, estación, terminal o punto de salida de ese tramo.
+- No uses el hotel de X como origen cuando la pregunta sea sobre "ir a X", salvo que el usuario diga claramente que ya está en X.
+- Si no puedes identificar una estación, aeropuerto o terminal exacta de salida, pero sí sabes que el usuario pregunta por salir del hotel anterior hacia otro destino, devuelve:
+  route_direction="hotel_to_place",
+  origin_query con el hotel anterior,
+  destination_query=null,
+  needs_clarification=true,
+  clarification_question preguntando desde qué aeropuerto, estación o punto saldrá hacia ese destino.
+
 `
         },
         ...cleanHistory,
         {
           role: "user",
           content:
-            "JSON completo del viaje:\n" +
-            JSON.stringify(tripJson) +
-            "\n\nPregunta actual del usuario:\n" +
-            question
+            content:
+  "Resumen estructurado del viaje:\n" +
+  JSON.stringify(tripSummary) +
+  "\n\nLínea de tiempo cronológica del viaje:\n" +
+  JSON.stringify(tripTimeline) +
+  "\n\nJSON completo del viaje, por si necesitas validar algún dato:\n" +
+  JSON.stringify(tripJson) +
+  "\n\nPregunta actual del usuario:\n" +
+  question
         }
       ]
     })
@@ -1016,7 +1124,7 @@ Rutas:
 - No inventes tiempos de ruta.
 - No digas que algo queda a pocos minutos caminando si transport_info.options.walking indica otro tiempo.
 - Si el usuario pregunta “está cerca”, responde con distancia y duración caminando cuando estén disponibles.
-- Si transport_info.type = "route_without_destination", explica opciones generales y pide destino solo si hace falta para calcular tiempo exacto.
+- Si transport_info.type = "route_without_destination", NO des tiempos ni alternativas como si fueran definitivas. Explica que falta el destino exacto para calcular la ruta y pide el aeropuerto, estación, terminal o punto al que quiere ir.
 - Si transport_info.type = "geocoding_failed", no inventes distancia; ofrece abrir el enlace de Google Maps o pedir una dirección más precisa.
 - Si el análisis estructurado incluye origin_query y destination_query, respétalos como la interpretación principal de la ruta.
 - No cambies la ciudad o el hotel de origen si origin_query ya fue resuelto por el clasificador.
@@ -1065,6 +1173,7 @@ question
           scope: analysis.scope || "all",
           city: analysis.city || null,
           answer,
+          analysis_raw: analysis,
           context_characters: contextText.length,
           approximate_context_tokens: approximateTokens,
           analysis_thinking_enabled: true,
