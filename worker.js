@@ -531,15 +531,19 @@ if (url.pathname === "/admin/logs") {
   <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; font-size: 13px;">
     <thead>
       <tr>
-        <th>Fecha</th>
-        <th>Trip ID</th>
-        <th>Intent</th>
-        <th>Scope</th>
-        <th>City</th>
-        <th>Thinking</th>
-        <th>Tokens aprox</th>
-        <th>Pregunta</th>
-        <th>Respuesta</th>
+     <th>Fecha</th>
+<th>Trip ID</th>
+<th>Intent</th>
+<th>Scope</th>
+<th>City</th>
+<th>Thinking</th>
+<th>Tokens aprox</th>
+<th>OSM</th>
+<th>Ruta min</th>
+<th>Dist km</th>
+<th>Error OSM</th>
+<th>Pregunta</th>
+<th>Respuesta</th>
       </tr>
     </thead>
     <tbody>
