@@ -15,7 +15,7 @@ export default {
   <h1>Yompr Concierge Admin</h1>
   <p>Sube aquí el archivo JSON completo del viaje.</p>
   <input type="file" id="jsonFile" accept=".json,application/json" />
-  <br><br>
+  <br><br> 
   <button onclick="uploadTrip()">Guardar viaje</button>
   <div id="result" style="margin-top:20px;"></div>
 
@@ -111,7 +111,7 @@ export default {
             messages: [
               {
                 role: "system",
-                content: "Eres Yompr Personal Concierge, un asistente de viaje premium. Responde en español claro, breve y útil. Usa solo la información del viaje proporcionada. Si no sabes algo con certeza, dilo. No inventes datos. Si detectas una emergencia o problema serio, recomienda contactar a Rigo."
+                content: "Eres Yompr Personal Concierge, un asistente de viaje premium. Responde en español claro, breve y útil. Se amable, contenido, elegante, elocuente. Usa solo la información del viaje proporcionada. Si no sabes algo con certeza, dilo. No inventes datos. Si detectas una emergencia o problema serio, recomienda contactar a Rigo."
               },
               {
                 role: "user",
