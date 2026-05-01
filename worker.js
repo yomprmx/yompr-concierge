@@ -1,10 +1,20 @@
 function detectIntentLocal(question) {
   const q = question.toLowerCase();
- 
+
+  // 🔥 Forzar análisis avanzado (no clasificar como activity)
+  if (
+    q.includes("tengo tiempo") ||
+    q.includes("me da tiempo") ||
+    q.includes("conviene") ||
+    q.includes("puedo visitar")
+  ) {
+    return "unknown";
+  }
+  
   const intents = {
     hotel: ["hotel", "hospedaje", "alojamiento", "quedo", "quedar", "dormir", "habitación", "habitacion", "check in", "check-in", "pernoctar"],
     flight: ["llegamos", "llega", "llegar", "salimos", "salir", "hora llegamos", "hora llega", "vuelo", "avión", "avion", "aeropuerto", "aerolínea", "aerolinea", "despega", "sale mi vuelo", "maleta", "equipaje", "terminal"],
-    activity: ["actividad", "tour", "excursión", "excursion", "boleto", "entrada", "visitar", "evento"],
+    activity: ["actividad", "tour", "excursión", "excursion", "boleto", "entrada", "evento"],
     transfer: ["traslado", "chofer", "pickup", "recogida", "transporte"],
     emergency: ["emergencia", "cancelaron", "perdí", "perdi", "no aparece", "ayuda urgente", "pasaporte", "accidente"],
     weather: ["clima", "llover", "lluvia", "temperatura", "frío", "frio", "calor"],
