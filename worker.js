@@ -69,6 +69,52 @@ export default {
           tripJson?.hotelVouchers?.[0]?.tripID ||
           tripJson?.serviceBookings?.[0]?.tripID;
 
+        if (url.pathname === "/api/chat" && request.method === "POST") {
+  try {
+    const { tripId, question } = await request.json();
+
+    const tripText = await env.TRIPS.get(tripId);
+
+    if (!tripText) {
+      return Response.json({ answer: "No encontré el viaje." });
+    }
+
+    const tripJson = JSON.parse(tripText);
+
+    const apiKey = env.DEEPSEEK_API_KEY;
+
+    const response = await fetch("https://api.deepseek.com/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + apiKey,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "deepseek-chat",
+        messages: [
+          {
+            role: "system",
+            content: "Eres un concierge de viajes. Responde claro y útil usando la información del viaje."
+          },
+          {
+            role: "user",
+            content: "Viaje:\n" + JSON.stringify(tripJson) + "\n\nPregunta:\n" + question
+          }
+        ]
+      })
+    });
+
+    const data = await response.json();
+
+    const answer = data.choices?.[0]?.message?.content || "No pude responder.";
+
+    return Response.json({ answer });
+
+  } catch (e) {
+    return Response.json({ answer: "Error al procesar la pregunta." });
+  }
+}
+
         if (!tripId) {
           return Response.json({
             success: false,
@@ -128,6 +174,32 @@ export default {
           <p>${services.length} servicio(s)</p>
 
           <hr>
+
+<h2>Pregúntale a tu concierge</h2>
+
+<input id="question" style="width: 70%;" placeholder="Ej: ¿a qué hora sale mi vuelo?" />
+<button onclick="ask()">Preguntar</button>
+
+<div id="answer" style="margin-top:20px;"></div>
+
+<script>
+async function ask() {
+  const question = document.getElementById("question").value;
+
+  const res = await fetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      tripId: "${tripId}",
+      question
+    })
+  });
+
+  const data = await res.json();
+
+  document.getElementById("answer").innerText = data.answer;
+}
+</script>
           <p>Yompr Personal Concierge — primera versión funcionando.</p>
         </body>
         </html>
