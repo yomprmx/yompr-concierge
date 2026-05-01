@@ -2,12 +2,12 @@ function detectIntentLocal(question) {
   const q = question.toLowerCase();
 
   const intents = {
-    hotel: ["hotel", "hospedaje", "alojamiento", "quedo", "quedar", "dormir", "habitación", "check in", "check-in"],
-    flight: ["vuelo", "avión", "aeropuerto", "aerolínea", "despega", "sale mi vuelo", "maleta", "equipaje", "terminal"],
-    activity: ["actividad", "tour", "excursión", "boleto", "entrada", "visitar", "evento"],
+    hotel: ["hotel", "hospedaje", "alojamiento", "quedo", "quedar", "dormir", "habitación", "habitacion", "check in", "check-in", "pernoctar"],
+    flight: ["vuelo", "avión", "avion", "aeropuerto", "aerolínea", "aerolinea", "despega", "sale mi vuelo", "maleta", "equipaje", "terminal"],
+    activity: ["actividad", "tour", "excursión", "excursion", "boleto", "entrada", "visitar", "evento"],
     transfer: ["traslado", "chofer", "pickup", "recogida", "transporte"],
-    emergency: ["emergencia", "cancelaron", "perdí", "no aparece", "ayuda urgente", "pasaporte", "accidente"],
-    weather: ["clima", "llover", "lluvia", "temperatura", "frío", "calor"],
+    emergency: ["emergencia", "cancelaron", "perdí", "perdi", "no aparece", "ayuda urgente", "pasaporte", "accidente"],
+    weather: ["clima", "llover", "lluvia", "temperatura", "frío", "frio", "calor"],
     nearby_places: ["cerca", "restaurante", "farmacia", "cajero", "supermercado", "comer"]
   };
 
@@ -75,24 +75,6 @@ function buildContextByIntent(tripJson, intent) {
     };
   }
 
-  if (intent === "itinerary") {
-    return {
-      ...base,
-      flightReservations: tripJson.flightReservations || [],
-      hotelVouchers: tripJson.hotelVouchers || [],
-      serviceBookings: tripJson.serviceBookings || []
-    };
-  }
-
-  if (intent === "emergency") {
-    return {
-      ...base,
-      flightReservations: tripJson.flightReservations || [],
-      hotelVouchers: tripJson.hotelVouchers || [],
-      serviceBookings: tripJson.serviceBookings || []
-    };
-  }
-
   return {
     ...base,
     flightReservations: tripJson.flightReservations || [],
@@ -100,7 +82,6 @@ function buildContextByIntent(tripJson, intent) {
     serviceBookings: tripJson.serviceBookings || []
   };
 }
-
 
 export default {
   async fetch(request, env) {
@@ -119,7 +100,7 @@ export default {
   <h1>Yompr Concierge Admin</h1>
   <p>Sube aquí el archivo JSON completo del viaje.</p>
   <input type="file" id="jsonFile" accept=".json,application/json" />
-  <br><br> 
+  <br><br>
   <button onclick="uploadTrip()">Guardar viaje</button>
   <div id="result" style="margin-top:20px;"></div>
 
@@ -190,74 +171,53 @@ export default {
     }
 
     if (url.pathname === "/api/chat" && request.method === "POST") {
-  try {
-    const { tripId, question } = await request.json();
+      try {
+        const { tripId, question } = await request.json();
 
-    const tripText = await env.TRIPS.get(tripId);
+        const tripText = await env.TRIPS.get(tripId);
 
-    if (!tripText) {
-      return Response.json({ answer: "No encontré el viaje." }, { status: 404 });
-    }
+        if (!tripText) {
+          return Response.json({ answer: "No encontré el viaje." }, { status: 404 });
+        }
 
-    const tripJson = JSON.parse(tripText);
+        const tripJson = JSON.parse(tripText);
 
-    let intent = detectIntentLocal(question);
+        let intent = detectIntentLocal(question);
 
-    if (intent === "unknown") {
-      intent = await classifyIntentWithDeepSeek(question, env);
-    }
+        if (intent === "unknown") {
+          intent = await classifyIntentWithDeepSeek(question, env);
+        }
 
-    const context = buildContextByIntent(tripJson, intent);
+        const context = buildContextByIntent(tripJson, intent);
 
-    const response = await fetch("https://api.deepseek.com/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": "Bearer " + env.DEEPSEEK_API_KEY,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "deepseek-v4-flash",
-        thinking: { type: "disabled" },
-        temperature: 0.3,
-        max_tokens: 700,
-        messages: [
-          {
-            role: "system",
-            content: "Eres Yompr Personal Concierge, un asistente de viaje premium. Responde en español claro, breve y útil. Usa solo la información del viaje proporcionada. Si no sabes algo con certeza, dilo. No inventes datos. Si detectas una emergencia o problema serio, recomienda contactar a Rigo."
+        const response = await fetch("https://api.deepseek.com/chat/completions", {
+          method: "POST",
+          headers: {
+            "Authorization": "Bearer " + env.DEEPSEEK_API_KEY,
+            "Content-Type": "application/json"
           },
-          {
-            role: "user",
-            content:
-              "Intención detectada: " + intent +
-              "\\n\\nContexto del viaje:\\n" +
-              JSON.stringify(context) +
-              "\\n\\nPregunta del cliente:\\n" +
-              question
-          }
-        ]
-      })
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      return Response.json({
-        answer: "Error de DeepSeek: " + JSON.stringify(data)
-      }, { status: 500 });
-    }
-
-    const answer = data.choices?.[0]?.message?.content || "No pude responder.";
-
-    return Response.json({
-      answer,
-      intent
-    });
-  } catch (e) {
-    return Response.json({
-      answer: "Error al procesar la pregunta: " + String(e)
-    }, { status: 500 });
-  }
-}
+          body: JSON.stringify({
+            model: "deepseek-v4-flash",
+            thinking: { type: "disabled" },
+            temperature: 0.3,
+            max_tokens: 700,
+            messages: [
+              {
+                role: "system",
+                content: "Eres Yompr Personal Concierge, un asistente de viaje premium. Responde en español claro, breve y útil. Usa solo la información del viaje proporcionada. Si no sabes algo con certeza, dilo. No inventes datos. Si detectas una emergencia o problema serio, recomienda contactar a Rigo."
+              },
+              {
+                role: "user",
+                content:
+                  "Intención detectada: " + intent +
+                  "\\n\\nContexto del viaje:\\n" +
+                  JSON.stringify(context) +
+                  "\\n\\nPregunta del cliente:\\n" +
+                  question
+              }
+            ]
+          })
+        });
 
         const data = await response.json();
 
@@ -269,7 +229,7 @@ export default {
 
         const answer = data.choices?.[0]?.message?.content || "No pude responder.";
 
-        return Response.json({ answer });
+        return Response.json({ answer, intent });
       } catch (e) {
         return Response.json({
           answer: "Error al procesar la pregunta: " + String(e)
