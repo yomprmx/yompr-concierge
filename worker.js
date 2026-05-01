@@ -16,9 +16,9 @@ export default {
         </head>
         <body style="font-family: Arial; padding: 24px;">
           <h1>Yompr Concierge Admin</h1>
-          <p>Sube aquí el JSON completo del viaje.</p>
+          <p>Sube aquí el archivo JSON completo del viaje.</p>
 
-          <textarea id="jsonInput" style="width:100%; height:300px;"></textarea>
+          <input type="file" id="jsonFile" accept=".json,application/json" />
           <br><br>
           <button onclick="uploadTrip()">Guardar viaje</button>
 
@@ -26,7 +26,16 @@ export default {
 
           <script>
             async function uploadTrip() {
-              const jsonText = document.getElementById("jsonInput").value;
+              const fileInput = document.getElementById("jsonFile");
+              const result = document.getElementById("result");
+
+              if (!fileInput.files.length) {
+                result.innerHTML = "<p style='color:red;'>Selecciona un archivo .json.</p>";
+                return;
+              }
+
+              const file = fileInput.files[0];
+              const jsonText = await file.text();
 
               const res = await fetch("/api/upload-trip", {
                 method: "POST",
@@ -36,8 +45,9 @@ export default {
 
               const data = await res.json();
 
-              document.getElementById("result").innerHTML =
+              result.innerHTML =
                 "<p><b>Resultado:</b> " + data.message + "</p>" +
+                (data.trip_id ? "<p><b>Trip ID:</b> " + data.trip_id + "</p>" : "") +
                 (data.link ? '<p><a href="' + data.link + '" target="_blank">Abrir viaje</a></p>' : "");
             }
           </script>
@@ -56,7 +66,8 @@ export default {
           tripJson?.trip?.tripIdentifier ||
           tripJson?.trip?.id ||
           tripJson?.flightReservations?.[0]?.tripID ||
-          tripJson?.hotelVouchers?.[0]?.tripID;
+          tripJson?.hotelVouchers?.[0]?.tripID ||
+          tripJson?.serviceBookings?.[0]?.tripID;
 
         if (!tripId) {
           return Response.json({
@@ -71,12 +82,12 @@ export default {
           success: true,
           message: "Viaje guardado correctamente.",
           trip_id: tripId,
-          link: "/v/" + tripId
+          link: "/v/" + encodeURIComponent(tripId)
         });
       } catch (error) {
         return Response.json({
           success: false,
-          message: "El JSON no es válido o hubo un error al guardarlo.",
+          message: "El archivo JSON no es válido o hubo un error al guardarlo.",
           error: String(error)
         }, { status: 400 });
       }
