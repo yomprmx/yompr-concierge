@@ -804,6 +804,49 @@ async function enrichWithTransportInfo(tripJson, analysis) {
   };
 }
 
+async function saveChatLog(env, log) {
+  try {
+    const tripId = log.trip_id || "unknown";
+    const logId = tripId + "-" + Date.now() + "-" + Math.random().toString(36).slice(2);
+
+    await env.CHAT_LOGS.put(logId, JSON.stringify({
+      created_at: new Date().toISOString(),
+      trip_id: tripId,
+      question: log.question || "",
+      intent: log.intent || "",
+      scope: log.scope || "",
+      city: log.city || "",
+      answer: log.answer || "",
+      context_characters: log.context_characters || 0,
+      approximate_context_tokens: log.approximate_context_tokens || 0,
+      analysis_thinking_enabled: log.analysis_thinking_enabled || false,
+      thinking_enabled: log.thinking_enabled || false,
+      session_history_messages: log.session_history_messages || 0,
+
+      transport_used: log.transport_used || false,
+      transport_type: log.transport_type || null,
+      transport_duration_min: log.transport_duration_min || null,
+      transport_distance_km: log.transport_distance_km || null,
+      transport_origin: log.transport_origin || null,
+      transport_destination: log.transport_destination || null,
+      transport_error: log.transport_error || null,
+
+      route_direction: log.route_direction || null,
+      route_mode: log.route_mode || null,
+      place_name: log.place_name || null,
+      geocode_origin: log.geocode_origin || null,
+      geocode_destination: log.geocode_destination || null,
+
+      error_stage: log.error_stage || null,
+      raw_error: log.raw_error || null,
+
+      used_transport_in_answer: log.used_transport_in_answer || false
+    }));
+  } catch (e) {
+    console.log("Error saving chat log:", String(e));
+  }
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -819,7 +862,7 @@ export default {
         return new Response("No autorizado", { status: 401 });
       }
 
-      const list = await env.CHAT_LOGS.list({ limit: 50 });
+      const list = await env.CHAT_LOGS.list({ limit: 200 });
       const logs = [];
 
       for (const key of list.keys) {
@@ -866,7 +909,7 @@ export default {
 </head>
 <body style="font-family: Arial; padding: 24px;">
   <h1>Yompr Concierge Logs</h1>
-  <p>Últimas 50 preguntas registradas.</p>
+  <p>Últimas 200 preguntas registradas.</p>
 
   <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; font-size: 13px;">
     <thead>
@@ -989,14 +1032,20 @@ export default {
     }
 
     if (url.pathname === "/api/chat" && request.method === "POST") {
-      try {
-        const {
-          tripId,
-          question,
-          timeZone,
-          localDate,
-          conversationHistory = []
-        } = await request.json();
+  let tripId = "unknown";
+  let question = "";
+
+  try {
+    const body = await request.json();
+
+    tripId = body.tripId || "unknown";
+    question = body.question || "";
+
+    const {
+      timeZone,
+      localDate,
+      conversationHistory = []
+    } = body;
 
         const tripText = await env.TRIPS.get(tripId);
 
@@ -1013,11 +1062,30 @@ let analysis = await classifyIntentWithDeepSeek(
   conversationHistory
 );
         if (analysis.needs_clarification) {
-          return Response.json({
-            answer: analysis.clarification_question || "¿Podrías darme un poco más de detalle para ayudarte mejor?",
-            intent: "clarification"
-          });
-        }
+  const clarificationAnswer =
+    analysis.clarification_question ||
+    "¿Podrías darme un poco más de detalle para ayudarte mejor?";
+
+  await saveChatLog(env, {
+    trip_id: tripId,
+    question,
+    intent: "clarification",
+    scope: analysis.scope || "unknown",
+    city: analysis.city || null,
+    answer: clarificationAnswer,
+    analysis_thinking_enabled: true,
+    thinking_enabled: false,
+    session_history_messages: Array.isArray(conversationHistory) ? conversationHistory.length : 0,
+    route_direction: analysis.route_direction || null,
+    route_mode: analysis.route_mode || null,
+    place_name: analysis.place_name || null
+  });
+
+  return Response.json({
+    answer: clarificationAnswer,
+    intent: "clarification"
+  });
+}
 
         const context = buildContextByIntent(tripJson, analysis, timeZone);
         const intent = analysis.intent || "general";
@@ -1043,13 +1111,25 @@ let analysis = await classifyIntentWithDeepSeek(
         const questionNorm = normalizeText(question);
 
         const needsThinking =
-          intent === "recommendation" ||
-          questionNorm.includes("conflicto") ||
-          questionNorm.includes("pesado") ||
-          questionNorm.includes("conviene") ||
-          questionNorm.includes("tengo tiempo") ||
-          questionNorm.includes("me da tiempo") ||
-          questionNorm.includes("riesgo");
+  intent === "recommendation" ||
+  analysis.scope === "trip_analysis" ||
+  questionNorm.includes("conflicto") ||
+  questionNorm.includes("pesado") ||
+  questionNorm.includes("conviene") ||
+  questionNorm.includes("mejor dia") ||
+  questionNorm.includes("mejor día") ||
+  questionNorm.includes("que dia") ||
+  questionNorm.includes("qué día") ||
+  questionNorm.includes("en que ciudad") ||
+  questionNorm.includes("en qué ciudad") ||
+  questionNorm.includes("salir") ||
+  questionNorm.includes("noche") ||
+  questionNorm.includes("bar") ||
+  questionNorm.includes("cena") ||
+  questionNorm.includes("cenar") ||
+  questionNorm.includes("tengo tiempo") ||
+  questionNorm.includes("me da tiempo") ||
+  questionNorm.includes("riesgo");
 
         const cleanHistory = Array.isArray(conversationHistory)
           ? conversationHistory
@@ -1071,7 +1151,7 @@ let analysis = await classifyIntentWithDeepSeek(
             model: "deepseek-v4-flash",
             thinking: { type: needsThinking ? "enabled" : "disabled" },
             temperature: 0.3,
-            max_tokens: needsThinking ? 2400 : 900,
+            max_tokens: needsThinking ? 3000 : 1200,
             messages: [
               {
                 role: "system",
@@ -1107,6 +1187,15 @@ Riesgos:
 - El check-in y check-out del hotel son ventanas o límites administrativos, no eventos fijos.
 - No trates un vuelo antes del check-out estándar como conflicto crítico. Solo recomienda check-out anticipado y preparar equipaje con tiempo.
 - No recomiendes late check-out para resolver salidas tempranas.
+
+Recomendaciones de días / planes:
+- Cuando el usuario pida "mejor día", "qué día conviene", "en qué ciudad", "salir de noche", "cenar", "tomar algo" o planes que impliquen cansancio, evalúa SIEMPRE el día siguiente.
+- Penaliza fuertemente cualquier noche previa a vuelo temprano, traslado temprano, cambio de ciudad, check-out temprano, tour o actividad importante por la mañana.
+- No recomiendes como mejor opción una noche si al día siguiente hay que madrugar, aunque esa ciudad sea atractiva.
+- Compara explícitamente 2 o 3 opciones y elige la que tenga menor impacto logístico.
+- Si una opción es atractiva pero logísticamente mala, dilo claramente.
+- La mejor recomendación debe balancear experiencia, descanso y riesgo operativo del día siguiente.
+- Si recomiendas entre varios días, baja prioridad a noches antes de vuelos o traslados tempranos, prefiere noches donde el día siguiente sea libre, ligero o sin cambio de ciudad.
 
 Estilo:
 - No seas redundante.
@@ -1164,47 +1253,58 @@ question
         const approximateTokens = Math.ceil(contextText.length / 4);
         const logId = tripId + "-" + Date.now();
 
-        await env.CHAT_LOGS.put(logId, JSON.stringify({
-          created_at: new Date().toISOString(),
-          trip_id: tripId,
-          question,
-          intent,
-          scope: analysis.scope || "all",
-          city: analysis.city || null,
-          answer,
-          analysis_raw: analysis,
-          context_characters: contextText.length,
-          approximate_context_tokens: approximateTokens,
-          analysis_thinking_enabled: true,
-          thinking_enabled: needsThinking,
-          session_history_messages: cleanHistory.length,
+      await saveChatLog(env, {
+  trip_id: tripId,
+  question,
+  intent,
+  scope: analysis.scope || "all",
+  city: analysis.city || null,
+  answer,
+  context_characters: contextText.length,
+  approximate_context_tokens: approximateTokens,
+  analysis_thinking_enabled: true,
+  thinking_enabled: needsThinking,
+  session_history_messages: cleanHistory.length,
 
-          transport_used: transportUsed,
-          transport_type: transportInfo?.type || null,
-          transport_duration_min: transportInfo?.duration_min || null,
-          transport_distance_km: transportInfo?.distance_km || null,
-          transport_origin: transportInfo?.origin || null,
-          transport_destination: transportInfo?.destination || null,
-          transport_error: transportError,
+  transport_used: transportUsed,
+  transport_type: transportInfo?.type || null,
+  transport_duration_min: transportInfo?.duration_min || null,
+  transport_distance_km: transportInfo?.distance_km || null,
+  transport_origin: transportInfo?.origin || null,
+  transport_destination: transportInfo?.destination || null,
+  transport_error: transportError,
 
-          route_direction: analysis.route_direction || null,
-          route_mode: analysis.route_mode || null,
-          place_name: analysis.place_name || null,
-          geocode_origin: transportInfo?.geocode_origin_display_name || null,
-          geocode_destination: transportInfo?.geocode_destination_display_name || null,
+  route_direction: analysis.route_direction || null,
+  route_mode: analysis.route_mode || null,
+  place_name: analysis.place_name || null,
+  geocode_origin: transportInfo?.geocode_origin_display_name || null,
+  geocode_destination: transportInfo?.geocode_destination_display_name || null,
 
-          used_transport_in_answer:
-            answer.includes("estimado") ||
-            answer.includes("Google Maps") ||
-            answer.includes("caminando") ||
-            answer.includes("taxi") ||
-            answer.includes("transporte público")
-        }));
+  used_transport_in_answer:
+    answer.includes("estimado") ||
+    answer.includes("Google Maps") ||
+    answer.includes("caminando") ||
+    answer.includes("taxi") ||
+    answer.includes("transporte público")
+});
 
         return Response.json({ answer, intent });
-      } catch (e) {
+           } catch (e) {
+        const errorAnswer = "Error al procesar la pregunta: " + String(e);
+
+        await saveChatLog(env, {
+          trip_id: tripId,
+          question,
+          intent: "error",
+          scope: "unknown",
+          city: null,
+          answer: errorAnswer,
+          error_stage: "api_chat_catch",
+          raw_error: String(e)
+        });
+
         return Response.json({
-          answer: "Error al procesar la pregunta: " + String(e)
+          answer: errorAnswer
         }, { status: 500 });
       }
     }
