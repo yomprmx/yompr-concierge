@@ -10,6 +10,14 @@
     {
       "binding": "TRIPS",
       "id": "e0b482c635d14d998169b6c53bee9027"
-    }
+    },
+
+  {
+
+    "binding": "CHAT_LOGS",
+
+    "id": "3479c47335fe4980a213bef313a8651a"
+
+  }
   ]
 }
