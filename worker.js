@@ -34,47 +34,94 @@ async function getRoute(from, to) {
 function buildGoogleMapsLink(origin, destination) {
   return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(destination)}`;
 }
+function airportCodeForCity(city) {
+  const c = normalizeText(city || "");
+
+  const map = {
+    paris: "CDG",
+    roma: "FCO",
+    venecia: "VCE",
+    barcelona: "BCN"
+  };
+
+  return map[c] || null;
+}
 
 async function enrichWithTransportInfo(tripJson, analysis) {
+  if (analysis.tool_needed !== "route" && analysis.intent !== "route") {
+    return null;
+  }
+
+  const city = normalizeText(analysis.city || "");
+  const routeDirection = analysis.route_direction || "unknown";
+
   const hotels = tripJson.hotelVouchers || [];
-  const flights = tripJson.flightReservations || [];
+  const allSegments = (tripJson.flightReservations || []).flatMap(r => r.segments || []);
 
-  if (!hotels.length || !flights.length) return null;
-
-const city = (analysis.city || "").toLowerCase();
-
-const hotel = (tripJson.hotelVouchers || []).find(h =>
-  JSON.stringify(h).toLowerCase().includes(city)
-);
-
-const flightSegment = (tripJson.flightReservations || [])
-  .flatMap(r => r.segments || [])
-  .find(s =>
-    (s.departureAirport || "").toLowerCase().includes(city)
+  const hotel = hotels.find(h =>
+    normalizeText(JSON.stringify(h)).includes(city)
   );
 
-  if (!hotel || !flightSegment) return null;
+  if (!hotel?.accommodationAddress) return null;
 
-const hotelAddress = hotel.accommodationAddress;
-const airport = flightSegment?.departureAirport;
+  let airportCode = analysis.airport_code || airportCodeForCity(city);
 
-  if (!hotelAddress || !airport) return null;
+  let segment = null;
 
-  const hotelCoords = await geocode(hotelAddress);
-  const airportCoords = await geocode(airport + " airport");
+  if (routeDirection === "airport_to_hotel") {
+    segment = allSegments.find(s =>
+      (airportCode && s.arrivalAirport === airportCode) ||
+      normalizeText(JSON.stringify(s)).includes(city)
+    );
+    airportCode = segment?.arrivalAirport || airportCode;
+  } else if (routeDirection === "hotel_to_airport") {
+    segment = allSegments.find(s =>
+      (airportCode && s.departureAirport === airportCode) ||
+      normalizeText(JSON.stringify(s)).includes(city)
+    );
+    airportCode = segment?.departureAirport || airportCode;
+  } else {
+    segment = allSegments.find(s =>
+      s.arrivalAirport === airportCode || s.departureAirport === airportCode
+    );
+  }
 
-  if (!hotelCoords || !airportCoords) return null;
+  if (!airportCode) return null;
 
-  const route = await getRoute(hotelCoords, airportCoords);
+  const hotelAddress = hotel.accommodationAddress;
+  const airportAddress = airportCode + " airport";
+
+  let origin = hotelAddress;
+  let destination = airportAddress;
+
+  if (routeDirection === "airport_to_hotel") {
+    origin = airportAddress;
+    destination = hotelAddress;
+  }
+
+  if (routeDirection === "hotel_to_airport") {
+    origin = hotelAddress;
+    destination = airportAddress;
+  }
+
+  const originCoords = await geocode(origin);
+  const destinationCoords = await geocode(destination);
+
+  if (!originCoords || !destinationCoords) return null;
+
+  const route = await getRoute(originCoords, destinationCoords);
 
   if (!route) return null;
 
   return {
-    origin: hotelAddress,
-    destination: airport,
+    city: analysis.city || null,
+    route_direction: routeDirection,
+    origin,
+    destination,
+    airport_code: airportCode,
     duration_min: Math.round(route.duration_min),
     distance_km: Math.round(route.distance_km),
-    maps_link: buildGoogleMapsLink(hotelAddress, airport)
+    maps_link: buildGoogleMapsLink(origin, destination)
   };
 }
 
@@ -211,14 +258,17 @@ function detectIntentLocal(question) {
   const q = question.toLowerCase();
 
   // 🔥 Forzar análisis avanzado (no clasificar como activity)
-  if (
-    q.includes("tengo tiempo") ||
-    q.includes("me da tiempo") ||
-    q.includes("conviene") ||
-    q.includes("puedo visitar")
-  ) {
-    return "unknown";
-  }
+ if (
+  q.includes("aeropuerto") ||
+  q.includes("qué tan lejos") ||
+  q.includes("que tan lejos") ||
+  q.includes("cómo llego") ||
+  q.includes("como llego") ||
+  q.includes("ruta") ||
+  q.includes("traslado")
+) {
+  return "unknown";
+}
   
   const intents = {
     hotel: ["hotel", "hospedaje", "alojamiento", "quedo", "quedar", "dormir", "habitación", "habitacion", "check in", "check-in", "pernoctar"],
@@ -246,42 +296,39 @@ async function classifyIntentWithDeepSeek(question, env) {
     },
     body: JSON.stringify({
       model: "deepseek-v4-flash",
-      thinking: { type: "disabled" },
+      thinking: { type: "enabled" },
       temperature: 0,
-      max_tokens: 250,
+      max_tokens: 500,
       messages: [
         {
           role: "system",
-         content: `
+          content: `
 Eres un analista de intención para un concierge de viajes.
 
-Analiza la pregunta del cliente y responde SOLO JSON válido con este formato:
+Responde SOLO JSON válido con este formato:
 
 {
-  "intent": "hotel | flight | activity | transfer | weather | nearby_places | emergency | itinerary | recommendation | general",
+  "intent": "hotel | flight | activity | transfer | weather | nearby_places | emergency | itinerary | recommendation | route | general",
   "scope": "all | city | date | next_event | specific_item | trip_analysis | unknown",
   "city": "nombre de ciudad si aplica, si no null",
   "date_reference": "hoy | mañana | fecha específica | null",
+  "tool_needed": "none | route | places | weather",
+  "route_direction": "airport_to_hotel | hotel_to_airport | hotel_to_place | unknown",
+  "airport_code": "código IATA si aplica, si no null",
   "confidence": 0-1,
   "needs_clarification": true/false,
   "clarification_question": "pregunta corta si hace falta aclarar"
 }
 
 Reglas:
-- Si el cliente pregunta por una ciudad específica, usa scope = "city".
-- Si pregunta por días, plan, itinerario, estancia o qué hará en una ciudad, usa intent = "itinerary".
-- Si menciona una ciudad como París, Roma, Venecia o Barcelona, NO pidas aclaración.
-- Si la pregunta puede resolverse revisando el itinerario completo, NO pidas aclaración.
-- Solo pide aclaración si realmente hay varias interpretaciones incompatibles.
+- Si pregunta por distancia, ruta, aeropuerto, cómo llegar o traslado, usa intent="route" y tool_needed="route".
+- Si dice "cuando llego", "al llegar", "llegada", usa route_direction="airport_to_hotel".
+- Si dice "cuando salgo", "para mi vuelo", "al aeropuerto", "regreso", usa route_direction="hotel_to_airport".
+- Si menciona París, Roma, Venecia o Barcelona, usa scope="city" y city correspondiente.
+- Si puedes inferir el aeropuerto por ciudad o vuelo, llena airport_code.
+- No pidas aclaración si se puede resolver revisando el itinerario.
+- Solo pide aclaración si realmente faltan datos indispensables.
 - Responde SOLO JSON válido.
-- Si la pregunta requiere comparar varias ciudades, días, horarios o consecuencias del día siguiente, usa:
-  intent = "recommendation"
-  scope = "trip_analysis"
-  needs_clarification = false
-- Si el cliente menciona "hoy", "mañana", "primer día", "último día", usa:
-  scope = "date"
-  date_reference = "hoy" o "mañana"
-  needs_clarification = false
 `
         },
         {
@@ -292,23 +339,25 @@ Reglas:
     })
   });
 
-const data = await response.json();
-const content = data.choices?.[0]?.message?.content || "{}";
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content || "{}";
 
-let parsed;
-
-try {
-  parsed = JSON.parse(content);
-} catch (e) {
-  parsed = {
-    intent: "general",
-    confidence: 0,
-    needs_clarification: true,
-    clarification_question: "¿Podrías aclararme un poco más tu pregunta?"
-  };
-}
-
-return parsed;
+  try {
+    return JSON.parse(content);
+  } catch (e) {
+    return {
+      intent: "general",
+      scope: "all",
+      city: null,
+      date_reference: null,
+      tool_needed: "none",
+      route_direction: "unknown",
+      airport_code: null,
+      confidence: 0,
+      needs_clarification: true,
+      clarification_question: "¿Podrías aclararme si te refieres al hotel, aeropuerto, vuelo o traslado?"
+    };
+  }
 }
 
 function normalizeText(value) {
@@ -704,10 +753,6 @@ try {
   transportError = String(e);
 }
         
-if (transportInfo) {
-  context.transport_info = transportInfo;
-}
-
 const needsThinking =
   intent === "recommendation" ||
   question.toLowerCase().includes("conflicto") ||
