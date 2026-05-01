@@ -380,7 +380,7 @@ if (password !== "Rigo090490!") {
 
     if (url.pathname === "/api/chat" && request.method === "POST") {
       try {
-        const { tripId, question, timeZone } = await request.json();
+        const { tripId, question, timeZone, localDate } = await request.json();
        
         const tripText = await env.TRIPS.get(tripId);
 
@@ -435,11 +435,13 @@ const intent = analysis.intent || "general";
               {
                 role: "user",
                 content:
-                  "Intención detectada: " + intent +
-                  "\\n\\nContexto del viaje:\\n" +
-                  JSON.stringify(context) +
-                  "\\n\\nPregunta del cliente:\\n" +
-                  question
+                 "Intención detectada: " + intent +
+"\\nZona horaria del cliente: " + (timeZone || "desconocida") +
+"\\nFecha local del cliente: " + (localDate || "desconocida") +
+"\\n\\nContexto del viaje:\\n" +
+JSON.stringify(context) +
+"\\n\\nPregunta del cliente:\\n" +
+question
               }
             ]
           })
@@ -535,6 +537,10 @@ return Response.json({ answer, intent });
 
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
+  const localDate = new Date().toLocaleDateString("en-CA", {
+  timeZone: timeZone
+});
+
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
@@ -542,7 +548,8 @@ return Response.json({ answer, intent });
       body: JSON.stringify({
         tripId: "${tripId}",
         question: question,
-        timeZone: timeZone
+        timeZone: timeZone,
+        localDate: localDate
       })
     });
 
