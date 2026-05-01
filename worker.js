@@ -69,6 +69,10 @@ Reglas:
   intent = "recommendation"
   scope = "trip_analysis"
   needs_clarification = false
+- Si el cliente menciona "hoy", "mañana", "primer día", "último día", usa:
+  scope = "date"
+  date_reference = "hoy" o "mañana"
+  needs_clarification = false
 `
         },
         {
@@ -105,7 +109,44 @@ function normalizeText(value) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
+function resolveDateReference(analysis, tripJson) {
+  const ref = (analysis.date_reference || "").toLowerCase();
+
+  const startDate = new Date(tripJson.trip?.startDate || Date.now());
+
+  if (ref === "hoy") {
+    return startDate;
+  }
+
+  if (ref === "mañana") {
+    const d = new Date(startDate);
+    d.setDate(d.getDate() + 1);
+    return d;
+  }
+
+  return null;
+}
+
 function buildContextByIntent(tripJson, analysis) {
+  const date = resolveDateReference(analysis, tripJson);
+
+if (date) {
+  const dateStr = date.toISOString().split("T")[0];
+
+  return {
+    ...base,
+    flightReservations: (tripJson.flightReservations || []).filter(f =>
+      JSON.stringify(f).includes(dateStr)
+    ),
+    hotelVouchers: (tripJson.hotelVouchers || []).filter(h =>
+      JSON.stringify(h).includes(dateStr)
+    ),
+    serviceBookings: (tripJson.serviceBookings || []).filter(s =>
+      JSON.stringify(s).includes(dateStr)
+    )
+  };
+}
+  
   const intent = analysis.intent || "general";
   const scope = analysis.scope || "all";
   const city = normalizeText(analysis.city || "");
