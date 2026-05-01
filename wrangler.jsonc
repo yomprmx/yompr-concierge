@@ -5,5 +5,11 @@
   "compatibility_date": "2026-05-01",
   "observability": {
     "enabled": true
-  }
+  },
+  "kv_namespaces": [
+    {
+      "binding": "TRIPS",
+      "id": "AQUI_PEGA_EL_ID_DE_TU_KV"
+    }
+  ]
 }
