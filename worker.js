@@ -1897,98 +1897,320 @@ return Response.json({ answer, intent });
       const services = tripJson.serviceBookings || [];
 
       return new Response(`
+return new Response(`
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>${trip.name || "Yompr Concierge"}</title>
-</head>
-<body style="font-family: Arial; padding: 24px;">
-  <h1>${trip.name || "Yompr Concierge"}</h1>
-  <p><b>Destino:</b> ${trip.destination || ""}</p>
 
-  <h2>Vuelos</h2>
-  <p>${flights.length} reservación(es) de vuelo</p>
-
-  <h2>Hospedaje</h2>
-  <p>${hotels.length} voucher(s) de hospedaje</p>
-
-  <h2>Servicios / Actividades</h2>
-  <p>${services.length} servicio(s)</p>
-
-  <hr>
-
-  <h2>Pregúntale a tu concierge</h2>
-  <input id="question" style="width: 70%;" placeholder="Ej: ¿a qué hora sale mi vuelo?" />
-  <button onclick="ask()">Preguntar</button>
-  <div id="answer" style="margin-top:20px; white-space:pre-wrap;"></div>
-
-  <script>
-let conversationHistory = [];
-  
-    async function ask() {
-  const question = document.getElementById("question").value;
-  const answerBox = document.getElementById("answer");
-
-  if (!question) {
-    answerBox.innerText = "Escribe una pregunta primero.";
-    return;
-  }
-
-  answerBox.innerText = "Pensando...";
-
-  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-
-  const localDate = new Date().toLocaleDateString("en-CA", {
-  timeZone: timeZone
-});
-
-  try {
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-body: JSON.stringify({
-  tripId: "${tripId}",
-  question: question,
-  timeZone: timeZone,
-  localDate: localDate,
-  conversationHistory: conversationHistory
-})
-    });
-
-    const data = await res.json();
-
-    if (!res.ok) {
-      answerBox.innerText = "Error: " + (data.answer || data.message || JSON.stringify(data));
-      return;
+  <style>
+    * {
+      box-sizing: border-box;
     }
 
-const answer = data.answer || "No recibí respuesta.";
-answerBox.innerText = answer;
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #f4f4f5;
+      color: #111827;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+    }
 
-conversationHistory.push({
-  role: "user",
-  content: question
-});
+    .app {
+      width: 100%;
+      max-width: 720px;
+      height: 100vh;
+      background: #ffffff;
+      display: flex;
+      flex-direction: column;
+      border-left: 1px solid #e5e7eb;
+      border-right: 1px solid #e5e7eb;
+    }
 
-conversationHistory.push({
-  role: "assistant",
-  content: answer
-});
+    .header {
+      padding: 18px 20px;
+      border-bottom: 1px solid #e5e7eb;
+      background: #ffffff;
+      flex-shrink: 0;
+    }
 
-conversationHistory = conversationHistory.slice(-8); 
-  
-  } catch (error) {
-    answerBox.innerText = "Error de conexión: " + error.message;
-  }
-}
+    .header h1 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 700;
+    }
+
+    .header p {
+      margin: 6px 0 0;
+      font-size: 13px;
+      color: #6b7280;
+    }
+
+    .trip-summary {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+
+    .chip {
+      font-size: 12px;
+      background: #f3f4f6;
+      color: #374151;
+      padding: 6px 9px;
+      border-radius: 999px;
+    }
+
+    .messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 18px;
+      background: #f9fafb;
+    }
+
+    .message-row {
+      display: flex;
+      margin-bottom: 12px;
+    }
+
+    .message-row.user {
+      justify-content: flex-end;
+    }
+
+    .message-row.assistant {
+      justify-content: flex-start;
+    }
+
+    .bubble {
+      max-width: 78%;
+      padding: 11px 14px;
+      border-radius: 18px;
+      font-size: 15px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+
+    .user .bubble {
+      background: #111827;
+      color: #ffffff;
+      border-bottom-right-radius: 5px;
+    }
+
+    .assistant .bubble {
+      background: #ffffff;
+      color: #111827;
+      border: 1px solid #e5e7eb;
+      border-bottom-left-radius: 5px;
+    }
+
+    .composer {
+      padding: 12px;
+      border-top: 1px solid #e5e7eb;
+      background: #ffffff;
+      display: flex;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .composer input {
+      flex: 1;
+      border: 1px solid #d1d5db;
+      border-radius: 999px;
+      padding: 12px 15px;
+      font-size: 15px;
+      outline: none;
+    }
+
+    .composer input:focus {
+      border-color: #111827;
+    }
+
+    .composer button {
+      border: none;
+      background: #111827;
+      color: #ffffff;
+      border-radius: 999px;
+      padding: 0 18px;
+      font-size: 15px;
+      cursor: pointer;
+    }
+
+    .composer button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .typing {
+      opacity: 0.7;
+      font-style: italic;
+    }
+
+    @media (max-width: 600px) {
+      .app {
+        max-width: none;
+        border: none;
+      }
+
+      .bubble {
+        max-width: 86%;
+        font-size: 15px;
+      }
+
+      .header {
+        padding: 14px 16px;
+      }
+
+      .messages {
+        padding: 14px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="app">
+    <div class="header">
+      <h1>${trip.name || "Yompr Concierge"}</h1>
+      <p>${trip.destination ? "Destino: " + trip.destination : "Tu concierge personal de viaje"}</p>
+
+      <div class="trip-summary">
+        <span class="chip">${flights.length} vuelo(s)</span>
+        <span class="chip">${hotels.length} hospedaje(s)</span>
+        <span class="chip">${services.length} servicio(s)</span>
+      </div>
+    </div>
+
+    <div id="messages" class="messages">
+      <div class="message-row assistant">
+        <div class="bubble">
+Hola, soy tu concierge personal de Yompr. Puedes preguntarme sobre vuelos, hospedaje, actividades, traslados o recomendaciones de tu viaje.
+        </div>
+      </div>
+    </div>
+
+    <div class="composer">
+      <input
+        id="question"
+        placeholder="Escribe tu pregunta..."
+        autocomplete="off"
+        onkeydown="handleKeyDown(event)"
+      />
+      <button id="sendButton" onclick="ask()">Enviar</button>
+    </div>
+  </div>
+
+  <script>
+    let conversationHistory = [];
+
+    function scrollToBottom() {
+      const messages = document.getElementById("messages");
+      messages.scrollTop = messages.scrollHeight;
+    }
+
+    function addMessage(role, content, extraClass) {
+      const messages = document.getElementById("messages");
+
+      const row = document.createElement("div");
+      row.className = "message-row " + role;
+
+      const bubble = document.createElement("div");
+      bubble.className = "bubble" + (extraClass ? " " + extraClass : "");
+      bubble.innerText = content;
+
+      row.appendChild(bubble);
+      messages.appendChild(row);
+
+      scrollToBottom();
+
+      return row;
+    }
+
+    function handleKeyDown(event) {
+      if (event.key === "Enter") {
+        ask();
+      }
+    }
+
+    async function ask() {
+      const questionInput = document.getElementById("question");
+      const sendButton = document.getElementById("sendButton");
+      const question = questionInput.value.trim();
+
+      if (!question) return;
+
+      addMessage("user", question);
+
+      questionInput.value = "";
+      questionInput.disabled = true;
+      sendButton.disabled = true;
+
+      const thinkingRow = addMessage("assistant", "Pensando...", "typing");
+
+      const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+      const localDate = new Date().toLocaleDateString("en-CA", {
+        timeZone: timeZone
+      });
+
+      try {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tripId: "${tripId}",
+            question: question,
+            timeZone: timeZone,
+            localDate: localDate,
+            conversationHistory: conversationHistory
+          })
+        });
+
+        const data = await res.json();
+
+        thinkingRow.remove();
+
+        if (!res.ok) {
+          const errorText = "Error: " + (data.answer || data.message || JSON.stringify(data));
+          addMessage("assistant", errorText);
+          return;
+        }
+
+        const answer = data.answer || "No recibí respuesta.";
+        addMessage("assistant", answer);
+
+        conversationHistory.push({
+          role: "user",
+          content: question
+        });
+
+        conversationHistory.push({
+          role: "assistant",
+          content: answer
+        });
+
+        conversationHistory = conversationHistory.slice(-8);
+
+      } catch (error) {
+        thinkingRow.remove();
+        addMessage("assistant", "Error de conexión: " + error.message);
+      } finally {
+        questionInput.disabled = false;
+        sendButton.disabled = false;
+        questionInput.focus();
+        scrollToBottom();
+      }
+    }
+
+    scrollToBottom();
   </script>
-
-  <hr>
-  <p>Yompr Personal Concierge — primera versión funcionando.</p>
 </body>
 </html>
-      `, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
+`, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
     }
 
     return new Response("Ruta no encontrada", { status: 404 });
