@@ -2017,17 +2017,6 @@ question
       messages.scrollTop = messages.scrollHeight;
     }
 
-    function renderContent(text) {
-      const escaped = text
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
-      return escaped.replace(
-        /(https?:\/\/[^\s]+)/g,
-        '<a href="$1" target="_blank" rel="noopener" style="color:#3b82f6;text-decoration:underline;word-break:break-all;">$1</a>'
-      );
-    }
-
     function addMessage(role, content, extraClass) {
       const messages = document.getElementById("messages");
 
@@ -2037,10 +2026,19 @@ question
       const bubble = document.createElement("div");
       bubble.className = "bubble" + (extraClass ? " " + extraClass : "");
 
-      if (extraClass === "typing") {
-        bubble.innerText = content;
-      } else {
-        bubble.innerHTML = renderContent(content);
+      const parts = content.split(/(https?:\/\/[^\s]+)/g);
+      for (let i = 0; i < parts.length; i++) {
+        if (i % 2 === 1) {
+          const a = document.createElement("a");
+          a.href = parts[i];
+          a.target = "_blank";
+          a.rel = "noopener";
+          a.textContent = parts[i];
+          a.style.cssText = "color:#3b82f6;text-decoration:underline;word-break:break-all;";
+          bubble.appendChild(a);
+        } else {
+          bubble.appendChild(document.createTextNode(parts[i]));
+        }
       }
 
       row.appendChild(bubble);
