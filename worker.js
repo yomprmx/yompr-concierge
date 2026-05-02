@@ -752,6 +752,56 @@ function buildGeocodeQueries(query, city = null, country = null) {
   return uniqueValues(expandedQueries);
 }
 
+async function geocodePlacesSearch(query, env) {
+  if (!query || !env?.GOOGLE_MAPS_KEY) return null;
+  try {
+    const res = await fetch("https://places.googleapis.com/v1/places:searchText", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": env.GOOGLE_MAPS_KEY,
+        "X-Goog-FieldMask": "places.displayName,places.formattedAddress,places.location"
+      },
+      body: JSON.stringify({ textQuery: query })
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data.places?.length) return null;
+    const place = data.places[0];
+    const lat = place.location?.latitude;
+    const lon = place.location?.longitude;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    return {
+      display_name: place.formattedAddress || place.displayName?.text || null,
+      lat,
+      lon
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+async function geocodeAddressSearch(query, env) {
+  if (!query || !env?.GOOGLE_MAPS_KEY) return null;
+  try {
+    const params = new URLSearchParams({ address: query, key: env.GOOGLE_MAPS_KEY });
+    const res = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?${params}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.status === "REQUEST_DENIED") return { error: "REQUEST_DENIED" };
+    if (data.status !== "OK" || !data.results?.length) return null;
+    const loc = data.results[0].geometry.location;
+    if (!Number.isFinite(loc.lat) || !Number.isFinite(loc.lng)) return null;
+    return {
+      display_name: data.results[0].formatted_address || null,
+      lat: loc.lat,
+      lon: loc.lng
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
 async function geocodeDetailed(query, options = {}, env = null) {
   if (!query) {
     return {
@@ -806,54 +856,44 @@ async function geocodeDetailed(query, options = {}, env = null) {
   for (const candidate of candidates) {
     attemptedQueries.push(candidate);
 
-    try {
-      const params = new URLSearchParams({
-        address: candidate,
-        key: env?.GOOGLE_MAPS_KEY || ""
-      });
+    // Places Text Search primero: entiende nombres de lugares semánticamente
+    const placesResult = await geocodePlacesSearch(candidate, env);
 
-      const res = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?${params}`);
-
-      if (!res.ok) {
-        lastError = `HTTP ${res.status}`;
-        continue;
-      }
-
-      const data = await res.json();
-
-      if (data.status === "REQUEST_DENIED") {
-        lastError = "REQUEST_DENIED: " + (data.error_message || "API key inválida");
-        break;
-      }
-
-      if (data.status === "OK" && data.results?.length) {
-        const location = data.results[0].geometry.location;
-        const lat = location.lat;
-        const lon = location.lng;
-
-        if (Number.isFinite(lat) && Number.isFinite(lon)) {
-          const value = {
-            query,
-            result: {
-              query,
-              attempted_query: candidate,
-              display_name: data.results[0].formatted_address || null,
-              lat,
-              lon
-            },
-            attempted_queries: attemptedQueries,
-            attempted_query: candidate,
-            status: "found",
-            error: null
-          };
-
-          await rememberGeocodeResult(env, cacheKey, value);
-          return value;
-        }
-      }
-    } catch (error) {
-      lastError = String(error);
+    if (placesResult?.lat) {
+      const value = {
+        query,
+        result: { query, attempted_query: candidate, ...placesResult },
+        attempted_queries: attemptedQueries,
+        attempted_query: candidate,
+        status: "found",
+        error: null
+      };
+      await rememberGeocodeResult(env, cacheKey, value);
+      return value;
     }
+
+    // Fallback: Geocoding API para direcciones postales exactas
+    const geocodeResult = await geocodeAddressSearch(candidate, env);
+
+    if (geocodeResult?.error === "REQUEST_DENIED") {
+      lastError = "REQUEST_DENIED: API key inválida";
+      break;
+    }
+
+    if (geocodeResult?.lat) {
+      const value = {
+        query,
+        result: { query, attempted_query: candidate, ...geocodeResult },
+        attempted_queries: attemptedQueries,
+        attempted_query: candidate,
+        status: "found",
+        error: null
+      };
+      await rememberGeocodeResult(env, cacheKey, value);
+      return value;
+    }
+
+    lastError = "not_found";
   }
 
   const value = {
