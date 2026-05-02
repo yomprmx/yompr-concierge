@@ -1012,11 +1012,16 @@ const destinationCoords = destinationGeo.result;
     };
   }
 
-  const [walkingRoute, drivingRoute, transitRoute] = await Promise.all([
+  const [walkingRoute, drivingRoute, transitRaw] = await Promise.all([
     getRoute(originCoords, destinationCoords, "walking", env),
     getRoute(originCoords, destinationCoords, "driving", env),
     getRoute(originCoords, destinationCoords, "transit", env)
   ]);
+
+  // Si el tránsito tarda más de 3x el tiempo en coche, el dato de Google no es útil
+  const transitRoute = (transitRaw && drivingRoute && transitRaw.duration_min > drivingRoute.duration_min * 3)
+    ? null
+    : transitRaw;
 
   const options = {
     walking: walkingRoute
@@ -1537,20 +1542,22 @@ Estilo:
 - Si detectas emergencia o problema serio, recomienda contactar a Rigo.
 
 Rutas:
-- Si transport_info.type = "calculated_route", usa transport_info como fuente principal para distancias y tiempos.
-- Si transport_info.options existe, puedes comparar caminando, taxi/coche y transporte público.
-- Para caminatas, usa solo transport_info.options.walking.
-- Para taxi/coche, usa solo transport_info.options.driving.
-- Para transporte público, si duration_min es null, NO inventes duración: di que debe confirmarse en el link de Google Maps por horarios en tiempo real.
-- No inventes tiempos de ruta.
-- No digas que algo queda a pocos minutos caminando si transport_info.options.walking indica otro tiempo.
+- Si transport_info.type = “calculated_route”, usa transport_info como fuente ÚNICA para distancias y tiempos. Prohibido usar conocimiento propio sobre distancias, tiempos o rutas.
+- Si transport_info.options existe, compara las opciones disponibles: caminando, taxi/coche y transporte público.
+- Para caminatas: usa ÚNICAMENTE transport_info.options.walking.duration_min y distance_km. Si walking es null, no menciones caminado como opción.
+- Para taxi/coche: usa ÚNICAMENTE transport_info.options.driving.duration_min y distance_km. Si driving es null, no menciones esta opción.
+- Para transporte público: usa ÚNICAMENTE transport_info.options.transit.duration_min y distance_km.
+  - Si transit.duration_min tiene un valor numérico, úsalo tal cual. No lo cuestiones ni lo ajustes.
+  - Si transit.duration_min es null, di literalmente: “Para el transporte público no tengo el tiempo calculado en este momento; puedes ver las opciones exactas aquí: [transit.maps_link]”. NUNCA estimes, supongas ni uses tu conocimiento general para dar un tiempo de tránsito.
+- REGLA ABSOLUTA: Cualquier tiempo o distancia que menciones debe estar en transport_info. Si no está ahí, no lo digas.
+- No inventes tiempos de ruta bajo ninguna circunstancia, aunque creas conocer la ciudad.
 - Si el usuario pregunta “está cerca”, responde con distancia y duración caminando cuando estén disponibles.
-- Si transport_info.type = "route_without_destination", NO des tiempos ni alternativas como si fueran definitivas. Explica que falta el destino exacto para calcular la ruta y pide el aeropuerto, estación, terminal o punto al que quiere ir.
-- Si transport_info.type = "geocoding_failed", no inventes distancia, duración ni rangos aproximados por conocimiento general. Di que no se pudo calcular la ruta con precisión, ofrece el enlace de Google Maps si existe y pide una dirección más precisa si hace falta.
-- Si transport_info.type = "route_calculation_failed", no inventes tiempos ni distancias. Di que sí se ubicaron origen/destino, pero no se pudo calcular la ruta; ofrece el enlace de Google Maps.
+- Si transport_info.type = “route_without_destination”, NO des tiempos ni alternativas. Explica que falta el destino exacto y pide el aeropuerto, estación o punto al que quiere ir.
+- Si transport_info.type = “geocoding_failed”, no inventes distancia ni duración. Ofrece el enlace de Google Maps y pide una dirección más precisa.
+- Si transport_info.type = “route_calculation_failed”, di que no se pudo calcular la ruta y ofrece el enlace de Google Maps.
 - Si el análisis estructurado incluye origin_query y destination_query, respétalos como la interpretación principal de la ruta.
 - No cambies la ciudad o el hotel de origen si origin_query ya fue resuelto por el clasificador.
-- Si el usuario habla de "ir a", "salir hacia", "cuando vaya a" otra ciudad, revisa el JSON completo para ubicar la etapa previa del viaje.
+- Si el usuario habla de “ir a”, “salir hacia”, “cuando vaya a” otra ciudad, revisa el JSON completo para ubicar la etapa previa del viaje.
 - Antes de responder rutas entre ciudades o cambios de destino, verifica la secuencia real del viaje en el JSON completo.
 `
               },
@@ -1982,3 +1989,4 @@ question
     return new Response("Ruta no encontrada", { status: 404 });
   }
 };
+
