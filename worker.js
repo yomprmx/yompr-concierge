@@ -934,12 +934,16 @@ async function getRoute(from, to, mode = "driving", env = null) {
       body.routingPreference = "TRAFFIC_AWARE";
     }
 
+    const fieldMask = travelMode === "TRANSIT"
+      ? "routes.duration,routes.distanceMeters,routes.legs.steps.transitDetails,routes.legs.steps.staticDuration"
+      : "routes.duration,routes.distanceMeters";
+
     const res = await fetch("https://routes.googleapis.com/directions/v2:computeRoutes", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": env?.GOOGLE_MAPS_KEY || "",
-        "X-Goog-FieldMask": "routes.duration,routes.distanceMeters"
+        "X-Goog-FieldMask": fieldMask
       },
       body: JSON.stringify(body)
     });
@@ -954,11 +958,27 @@ async function getRoute(from, to, mode = "driving", env = null) {
     const durationSeconds = parseInt(route.duration) || 0;
     const distanceMeters = route.distanceMeters || 0;
 
-    return {
+    const result = {
       mode,
       distance_km: distanceMeters / 1000,
       duration_min: durationSeconds / 60
     };
+
+    if (travelMode === "TRANSIT") {
+      const steps = (route.legs?.[0]?.steps || [])
+        .filter(s => s.transitDetails)
+        .map(s => ({
+          line: s.transitDetails.transitLine?.name || s.transitDetails.transitLine?.nameShort || null,
+          vehicle: s.transitDetails.transitLine?.vehicle?.type || null,
+          from: s.transitDetails.stopDetails?.departureStop?.name || null,
+          to: s.transitDetails.stopDetails?.arrivalStop?.name || null,
+          stops: s.transitDetails.stopCount || null,
+          duration_min: s.staticDuration ? Math.round(parseInt(s.staticDuration) / 60) : null
+        }));
+      if (steps.length) result.steps = steps;
+    }
+
+    return result;
   } catch (_) {
     return null;
   }
@@ -1106,7 +1126,8 @@ const destinationCoords = destinationGeo.result;
           mode: "transit",
           duration_min: Math.round(transitRoute.duration_min),
           distance_km: Math.round(transitRoute.distance_km * 10) / 10,
-          maps_link: buildGoogleMapsLink(origin, destination, "transit")
+          maps_link: buildGoogleMapsLink(origin, destination, "transit"),
+          ...(transitRoute.steps?.length ? { steps: transitRoute.steps } : {})
         }
       : {
           mode: "transit",
@@ -1647,6 +1668,7 @@ Rutas:
 - Para taxi/coche: usa ÚNICAMENTE transport_info.options.driving.duration_min y distance_km. Si driving es null, no menciones esta opción.
 - Para transporte público: usa ÚNICAMENTE transport_info.options.transit.duration_min y distance_km.
   - Si transit.duration_min tiene un valor numérico, úsalo tal cual. No lo cuestiones ni lo ajustes.
+  - Si transit.steps existe, úsalo para explicar la ruta paso a paso: qué línea tomar, desde qué parada, cuántas paradas, dónde transbordar. Esto es lo más valioso que puedes dar al cliente.
   - Si transit.duration_min es null, di literalmente: “Para el transporte público no tengo el tiempo calculado en este momento; puedes ver las opciones exactas aquí: [transit.maps_link]”. NUNCA estimes, supongas ni uses tu conocimiento general para dar un tiempo de tránsito.
 - REGLA ABSOLUTA: Cualquier tiempo o distancia que menciones debe estar en transport_info. Si no está ahí, no lo digas.
 - No inventes tiempos de ruta bajo ninguna circunstancia, aunque creas conocer la ciudad.
@@ -1995,6 +2017,17 @@ question
       messages.scrollTop = messages.scrollHeight;
     }
 
+    function renderContent(text) {
+      const escaped = text
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+      return escaped.replace(
+        /(https?:\/\/[^\s]+)/g,
+        '<a href="$1" target="_blank" rel="noopener" style="color:#3b82f6;text-decoration:underline;word-break:break-all;">$1</a>'
+      );
+    }
+
     function addMessage(role, content, extraClass) {
       const messages = document.getElementById("messages");
 
@@ -2003,7 +2036,12 @@ question
 
       const bubble = document.createElement("div");
       bubble.className = "bubble" + (extraClass ? " " + extraClass : "");
-      bubble.innerText = content;
+
+      if (extraClass === "typing") {
+        bubble.innerText = content;
+      } else {
+        bubble.innerHTML = renderContent(content);
+      }
 
       row.appendChild(bubble);
       messages.appendChild(row);
