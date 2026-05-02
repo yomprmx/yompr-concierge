@@ -31,6 +31,25 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+const MAX_GEOCODE_CACHE_ENTRIES = 200;
+const geocodeMemoryCache = new Map();
+
+const COUNTRY_ALIASES = [
+  [/\bfrancia\b/gi, "France"],
+  [/\bespana\b/gi, "Spain"],
+  [/\bespaña\b/gi, "Spain"],
+  [/\bitalia\b/gi, "Italy"],
+  [/\balemania\b/gi, "Germany"],
+  [/\breino unido\b/gi, "United Kingdom"],
+  [/\bestados unidos\b/gi, "United States"],
+  [/\bpaises bajos\b/gi, "Netherlands"],
+  [/\bpaíses bajos\b/gi, "Netherlands"],
+  [/\bsuiza\b/gi, "Switzerland"],
+  [/\baustria\b/gi, "Austria"],
+  [/\bportugal\b/gi, "Portugal"],
+  [/\bgrecia\b/gi, "Greece"]
+];
+
 function getEventDateTime(value) {
   if (!value) return null;
   const d = new Date(value);
@@ -610,6 +629,16 @@ function uniqueValues(values) {
   return [...new Set(values.filter(Boolean).map(v => String(v).trim()).filter(Boolean))];
 }
 
+function replaceCountryAliases(query) {
+  let result = String(query || "");
+
+  for (const [pattern, replacement] of COUNTRY_ALIASES) {
+    result = result.replace(pattern, replacement);
+  }
+
+  return result;
+}
+
 function simplifyPlaceQuery(query) {
   return String(query || "")
     .replace(/\([^)]*\)/g, " ")
@@ -628,21 +657,78 @@ function removeGenericPlaceWords(query) {
     .trim();
 }
 
+function extractIataCode(query) {
+  const match = String(query || "").match(/\(([A-Z]{3})\)|\b([A-Z]{3})\b/);
+  return match ? (match[1] || match[2]) : null;
+}
+
+function getGeocodeCacheKey(query, options = {}) {
+  return [
+    normalizeText(query),
+    normalizeText(options.city || ""),
+    normalizeText(options.country || "")
+  ].join("|");
+}
+
+function rememberGeocodeResult(cacheKey, value) {
+  if (!cacheKey) return;
+
+  if (geocodeMemoryCache.size >= MAX_GEOCODE_CACHE_ENTRIES) {
+    const firstKey = geocodeMemoryCache.keys().next().value;
+    geocodeMemoryCache.delete(firstKey);
+  }
+
+  geocodeMemoryCache.set(cacheKey, value);
+}
+
 function buildGeocodeQueries(query, city = null, country = null) {
   const original = String(query || "").trim();
   if (!original) return [];
 
   const simplified = simplifyPlaceQuery(original);
   const withoutGenericWords = removeGenericPlaceWords(simplified);
+  const countryAdjustedOriginal = replaceCountryAliases(original);
+  const countryAdjustedSimplified = replaceCountryAliases(simplified);
+  const commaParts = simplified.split(",").map(part => part.trim()).filter(Boolean);
+  const addressWithoutPlaceName = commaParts.length > 1 ? commaParts.slice(1).join(", ") : "";
+  const iataCode = extractIataCode(original);
+  const airportLike =
+    /\b(aeropuerto|airport|aéroport|aeroport|flughafen|aeroporto)\b/i.test(original) ||
+    Boolean(iataCode);
 
   const cityText = city ? String(city).trim() : "";
   const countryText = country ? String(country).trim() : "";
 
   const baseQueries = [
     original,
+    countryAdjustedOriginal,
     simplified,
-    withoutGenericWords
+    countryAdjustedSimplified,
+    withoutGenericWords,
+    addressWithoutPlaceName,
+    replaceCountryAliases(addressWithoutPlaceName)
   ];
+
+  if (airportLike && iataCode) {
+    baseQueries.unshift(
+      `${iataCode} airport`,
+      cityText ? `${cityText} ${iataCode} airport` : null
+    );
+  }
+
+  if (airportLike) {
+    const airportName = simplified
+      .replace(/\([^)]*\)/g, " ")
+      .replace(/\b(aeropuerto|airport|aéroport|aeroport|flughafen|aeroporto)\b/gi, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/^(de|del|la|el|le|les|the|di|da|do|du)\s+/i, "")
+      .trim();
+
+    if (airportName) {
+      baseQueries.push(`${airportName} Airport`);
+    }
+  }
 
   const expandedQueries = [];
 
@@ -671,68 +757,137 @@ function buildGeocodeQueries(query, city = null, country = null) {
   return uniqueValues(expandedQueries);
 }
 
-async function geocode(query, options = {}) {
-  if (!query) return null;
+async function geocodeDetailed(query, options = {}) {
+  if (!query) {
+    return {
+      query: null,
+      result: null,
+      attempted_queries: [],
+      attempted_query: null,
+      status: "missing_query",
+      error: "missing_query"
+    };
+  }
+
+  const cacheKey = getGeocodeCacheKey(query, options);
+
+  if (geocodeMemoryCache.has(cacheKey)) {
+    return geocodeMemoryCache.get(cacheKey);
+  }
 
   const queries = buildGeocodeQueries(
     query,
     options.city || null,
     options.country || null
   );
+  const attemptedQueries = [];
+  let lastError = null;
 
   for (const candidate of queries) {
-    try {
-      const url =
-        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(candidate)}` +
-        `&format=json&limit=1&addressdetails=1`;
+    attemptedQueries.push(candidate);
 
-      const res = await fetch(url, {
+    try {
+      const params = new URLSearchParams({
+        q: candidate,
+        format: "jsonv2",
+        limit: "1",
+        addressdetails: "1",
+        namedetails: "1",
+        "accept-language": "es,en"
+      });
+
+      const res = await fetch(`https://nominatim.openstreetmap.org/search?${params}`, {
         headers: {
-          "User-Agent": "Yompr Concierge"
+          "Accept": "application/json",
+          "User-Agent": "Yompr Concierge travel assistant"
         }
       });
+
+      if (!res.ok) {
+        lastError = `HTTP ${res.status}${res.statusText ? " " + res.statusText : ""}`;
+        continue;
+      }
 
       const data = await res.json();
 
       if (Array.isArray(data) && data.length) {
-        return {
-          query,
-          attempted_query: candidate,
-          display_name: data[0].display_name || null,
-          lat: parseFloat(data[0].lat),
-          lon: parseFloat(data[0].lon)
-        };
+        const lat = parseFloat(data[0].lat);
+        const lon = parseFloat(data[0].lon);
+
+        if (Number.isFinite(lat) && Number.isFinite(lon)) {
+          const value = {
+            query,
+            result: {
+              query,
+              attempted_query: candidate,
+              display_name: data[0].display_name || null,
+              lat,
+              lon
+            },
+            attempted_queries: attemptedQueries,
+            attempted_query: candidate,
+            status: "found",
+            error: null
+          };
+
+          rememberGeocodeResult(cacheKey, value);
+          return value;
+        }
       }
-    } catch (_) {}
+    } catch (error) {
+      lastError = String(error);
+    }
   }
 
-  return null;
+  const value = {
+    query,
+    result: null,
+    attempted_queries: attemptedQueries,
+    attempted_query: attemptedQueries[attemptedQueries.length - 1] || null,
+    status: lastError ? "error" : "not_found",
+    error: lastError
+  };
+
+  rememberGeocodeResult(cacheKey, value);
+  return value;
+}
+
+async function geocode(query, options = {}) {
+  const detailed = await geocodeDetailed(query, options);
+  return detailed.result;
 }
 
 async function getRoute(from, to, mode = "driving") {
-  const profileMap = {
-    driving: "driving",
-    walking: "foot"
-  };
+  try {
+    const profileMap = {
+      driving: "driving",
+      walking: "foot"
+    };
 
-  const profile = profileMap[mode] || "driving";
+    const profile = profileMap[mode] || "driving";
 
-  const url =
-    `https://router.project-osrm.org/route/v1/${profile}/` +
-    `${from.lon},${from.lat};${to.lon},${to.lat}?overview=false`;
+    const url =
+      `https://router.project-osrm.org/route/v1/${profile}/` +
+      `${from.lon},${from.lat};${to.lon},${to.lat}?overview=false`;
 
-  const res = await fetch(url);
-  const data = await res.json();
+    const res = await fetch(url);
 
-  if (!data.routes?.length) return null;
+    if (!res.ok) return null;
 
-  const route = data.routes[0];
+    const data = await res.json();
 
-  return {
-    mode,
-    distance_km: route.distance / 1000,
-    duration_min: route.duration / 60
-  };
+    if (!data.routes?.length) return null;
+
+    const route = data.routes[0];
+
+    return {
+      mode,
+      distance_km: route.distance / 1000,
+      duration_min: route.duration / 60
+    };
+  } catch (_) {
+    return null;
+  }
 }
 
 function buildGoogleMapsLink(origin, destination, mode = null) {
@@ -802,17 +957,25 @@ async function enrichWithTransportInfo(tripJson, analysis) {
     };
   }
 
-const originCoords = await geocode(origin, {
+const originGeo = await geocodeDetailed(origin, {
   city: analysis.city || null,
   country: null
 });
 
-const destinationCoords = await geocode(destination, {
+const destinationGeo = await geocodeDetailed(destination, {
   city: analysis.city || null,
   country: null
 });
+
+const originCoords = originGeo.result;
+const destinationCoords = destinationGeo.result;
 
   if (!originCoords || !destinationCoords) {
+    const geocodeError = [
+      !originCoords ? `origin: ${originGeo.error || originGeo.status}` : null,
+      !destinationCoords ? `destination: ${destinationGeo.error || destinationGeo.status}` : null
+    ].filter(Boolean).join(" | ");
+
     return {
       type: "geocoding_failed",
       route_direction: analysis.route_direction || "unknown",
@@ -825,6 +988,11 @@ const destinationCoords = await geocode(destination, {
       destination_geocoded: Boolean(destinationCoords),
       geocode_origin_display_name: originCoords?.display_name || null,
       geocode_destination_display_name: destinationCoords?.display_name || null,
+      geocode_origin_attempted_query: originGeo.attempted_queries.join(" | ") || null,
+      geocode_destination_attempted_query: destinationGeo.attempted_queries.join(" | ") || null,
+      geocode_origin_error: !originCoords ? originGeo.error || originGeo.status || null : null,
+      geocode_destination_error: !destinationCoords ? destinationGeo.error || destinationGeo.status || null : null,
+      geocode_error: geocodeError || null,
       maps_link: buildGoogleMapsLink(origin, destination)
     };
   }
@@ -860,6 +1028,40 @@ const destinationCoords = await geocode(destination, {
     }
   };
 
+  let routeError = null;
+
+  if (requestedMode === "walking" && !options.walking) {
+    routeError = "walking_route_not_found";
+  } else if (requestedMode === "driving" && !options.driving) {
+    routeError = "driving_route_not_found";
+  } else if (requestedMode === "all" && !options.walking && !options.driving) {
+    routeError = "osrm_route_not_found";
+  }
+
+  if (routeError) {
+    return {
+      type: "route_calculation_failed",
+      route_direction: analysis.route_direction || "unknown",
+      route_mode: requestedMode,
+      origin,
+      destination,
+      place_name: analysis.place_name || null,
+      city: analysis.city || null,
+      duration_min: null,
+      distance_km: null,
+      maps_link: buildGoogleMapsLink(origin, destination),
+      geocode_origin_display_name: originCoords.display_name || null,
+      geocode_destination_display_name: destinationCoords.display_name || null,
+      geocode_origin_attempted_query: originGeo.attempted_queries.join(" | ") || originCoords.attempted_query || null,
+      geocode_destination_attempted_query: destinationGeo.attempted_queries.join(" | ") || destinationCoords.attempted_query || null,
+      geocode_origin_error: null,
+      geocode_destination_error: null,
+      geocode_error: null,
+      route_error: routeError,
+      options
+    };
+  }
+
   let primary = null;
 
   if (requestedMode === "walking") {
@@ -886,8 +1088,11 @@ const destinationCoords = await geocode(destination, {
     geocode_origin_display_name: originCoords.display_name || null,
     geocode_destination_display_name: destinationCoords.display_name || null,
     options,
-    geocode_origin_attempted_query: log.geocode_origin_attempted_query || null,
-geocode_destination_attempted_query: log.geocode_destination_attempted_query || null
+    geocode_origin_attempted_query: originGeo.attempted_queries.join(" | ") || originCoords.attempted_query || null,
+    geocode_destination_attempted_query: destinationGeo.attempted_queries.join(" | ") || destinationCoords.attempted_query || null,
+    geocode_origin_error: null,
+    geocode_destination_error: null,
+    geocode_error: null
   };
 }
 
@@ -929,8 +1134,10 @@ async function saveChatLog(env, log) {
 
       used_transport_in_answer: log.used_transport_in_answer || false,
 
-      geocode_origin_attempted_query: transportInfo?.geocode_origin_attempted_query || null,
-geocode_destination_attempted_query: transportInfo?.geocode_destination_attempted_query || null
+      geocode_origin_attempted_query: log.geocode_origin_attempted_query || null,
+      geocode_destination_attempted_query: log.geocode_destination_attempted_query || null,
+      geocode_origin_error: log.geocode_origin_error || null,
+      geocode_destination_error: log.geocode_destination_error || null
     }));
   } catch (e) {
     console.log("Error saving chat log:", String(e));
@@ -985,8 +1192,10 @@ export default {
     <td style="max-width: 180px; white-space: pre-wrap;">${escapeHtml(log.place_name || "")}</td>
     <td>${escapeHtml(log.geocode_origin || "")}</td>
     <td>${escapeHtml(log.geocode_destination || "")}</td>
-    <td>${escapeHtml(log.geocode_origin_attempted_query || "")}</td>
-<td>${escapeHtml(log.geocode_destination_attempted_query || "")}</td>
+    <td style="max-width: 280px; white-space: pre-wrap;">${escapeHtml(log.geocode_origin_attempted_query || "")}</td>
+    <td style="max-width: 280px; white-space: pre-wrap;">${escapeHtml(log.geocode_destination_attempted_query || "")}</td>
+    <td style="max-width: 180px; white-space: pre-wrap;">${escapeHtml(log.geocode_origin_error || "")}</td>
+    <td style="max-width: 180px; white-space: pre-wrap;">${escapeHtml(log.geocode_destination_error || "")}</td>
     <td style="max-width: 260px; white-space: pre-wrap;">${escapeHtml(log.question || "")}</td>
     <td style="max-width: 480px; white-space: pre-wrap;">${escapeHtml(log.answer || "")}</td>
   </tr>
@@ -1026,7 +1235,9 @@ export default {
         <th>Geocode origin</th>
         <th>Geocode destination</th>
         <th>Origin attempted</th>
-<th>Destination attempted</th>
+        <th>Destination attempted</th>
+        <th>Origin error</th>
+        <th>Destination error</th>
         <th>Pregunta</th>
         <th>Respuesta</th>
       </tr>
@@ -1257,6 +1468,7 @@ Usa solo la información del viaje proporcionada y los datos calculados en trans
 La respuesta debe ser concisa, lógica y responder lo que el cliente necesita sin hacerla innecesariamente extensa.
 No seas condescendiente, sé amable y directo.
 Las respuestas deben leerse naturales y como una conversación entre personas, no máquinas.
+Responde en texto plano. No uses Markdown, encabezados con ###, tablas ni asteriscos para negritas.
 
 Puedes usar el historial reciente de esta sesión para entender referencias como:
 - "¿y en taxi?"
@@ -1307,7 +1519,8 @@ Rutas:
 - No digas que algo queda a pocos minutos caminando si transport_info.options.walking indica otro tiempo.
 - Si el usuario pregunta “está cerca”, responde con distancia y duración caminando cuando estén disponibles.
 - Si transport_info.type = "route_without_destination", NO des tiempos ni alternativas como si fueran definitivas. Explica que falta el destino exacto para calcular la ruta y pide el aeropuerto, estación, terminal o punto al que quiere ir.
-- Si transport_info.type = "geocoding_failed", no inventes distancia; ofrece abrir el enlace de Google Maps o pedir una dirección más precisa.
+- Si transport_info.type = "geocoding_failed", no inventes distancia, duración ni rangos aproximados por conocimiento general. Di que no se pudo calcular la ruta con precisión, ofrece el enlace de Google Maps si existe y pide una dirección más precisa si hace falta.
+- Si transport_info.type = "route_calculation_failed", no inventes tiempos ni distancias. Di que sí se ubicaron origen/destino, pero no se pudo calcular la ruta por OSRM; ofrece el enlace de Google Maps.
 - Si el análisis estructurado incluye origin_query y destination_query, respétalos como la interpretación principal de la ruta.
 - No cambies la ciudad o el hotel de origen si origin_query ya fue resuelto por el clasificador.
 - Si el usuario habla de "ir a", "salir hacia", "cuando vaya a" otra ciudad, revisa el JSON completo para ubicar la etapa previa del viaje.
@@ -1345,7 +1558,6 @@ question
 
         const contextText = JSON.stringify(context);
         const approximateTokens = Math.ceil(contextText.length / 4);
-        const logId = tripId + "-" + Date.now();
 
       await saveChatLog(env, {
   trip_id: tripId,
@@ -1366,7 +1578,7 @@ question
   transport_distance_km: transportInfo?.distance_km || null,
   transport_origin: transportInfo?.origin || null,
   transport_destination: transportInfo?.destination || null,
-  transport_error: transportError,
+  transport_error: transportError || transportInfo?.geocode_error || transportInfo?.route_error || null,
 
   route_direction: analysis.route_direction || null,
   route_mode: analysis.route_mode || null,
@@ -1375,6 +1587,8 @@ question
   geocode_destination: transportInfo?.geocode_destination_display_name || null,
   geocode_origin_attempted_query: transportInfo?.geocode_origin_attempted_query || null,
   geocode_destination_attempted_query: transportInfo?.geocode_destination_attempted_query || null,
+  geocode_origin_error: transportInfo?.geocode_origin_error || null,
+  geocode_destination_error: transportInfo?.geocode_destination_error || null,
 
   used_transport_in_answer:
     answer.includes("estimado") ||
