@@ -111,6 +111,200 @@ function getTripStartDate(tripJson) {
   return null;
 }
 
+function formatDateKey(date) {
+  if (!date || Number.isNaN(date.getTime())) return null;
+  return date.toISOString().split("T")[0];
+}
+
+function describeWeatherCode(code) {
+  const value = Number(code);
+
+  if (value === 0) return "cielo despejado";
+  if ([1, 2, 3].includes(value)) return "poco nuboso a nublado";
+  if ([45, 48].includes(value)) return "niebla";
+  if ([51, 53, 55].includes(value)) return "llovizna";
+  if ([56, 57].includes(value)) return "llovizna helada";
+  if ([61, 63, 65].includes(value)) return "lluvia";
+  if ([66, 67].includes(value)) return "lluvia helada";
+  if ([71, 73, 75, 77].includes(value)) return "nieve";
+  if ([80, 81, 82].includes(value)) return "chubascos";
+  if ([85, 86].includes(value)) return "chubascos de nieve";
+  if ([95, 96, 99].includes(value)) return "tormenta";
+
+  return "condiciones variables";
+}
+
+function getDefaultTripCity(tripJson) {
+  for (const hotel of tripJson.hotelVouchers || []) {
+    if (hotel.city) return hotel.city;
+    if (hotel.destination) return hotel.destination;
+    if (hotel.accommodationCity) return hotel.accommodationCity;
+  }
+
+  return tripJson.trip?.destination || null;
+}
+
+function inferCityForDate(tripJson, date) {
+  const dateKey = formatDateKey(date);
+  if (!dateKey) return null;
+
+  for (const hotel of tripJson.hotelVouchers || []) {
+    const checkIn = hotel.checkIn ? String(hotel.checkIn).split("T")[0] : null;
+    const checkOut = hotel.checkOut ? String(hotel.checkOut).split("T")[0] : null;
+
+    if (checkIn && checkOut && checkIn <= dateKey && dateKey <= checkOut) {
+      return hotel.city || hotel.destination || hotel.accommodationCity || null;
+    }
+  }
+
+  return null;
+}
+
+function getUpcomingTripEvent(tripJson, timeZone) {
+  const today = getTodayInTimezone(timeZone || "UTC");
+  const todayKey = formatDateKey(today);
+  const events = collectTripEvents(tripJson);
+
+  return events.find(event => formatDateKey(event.start) >= todayKey) || events[0] || null;
+}
+
+async function geocodeWeatherLocation(query) {
+  if (!query) return null;
+
+  const params = new URLSearchParams({
+    name: query,
+    count: "1",
+    language: "es",
+    format: "json"
+  });
+
+  try {
+    const res = await fetch(`https://geocoding-api.open-meteo.com/v1/search?${params}`, {
+      headers: {
+        "Accept": "application/json"
+      }
+    });
+
+    if (!res.ok) return null;
+
+    const data = await res.json();
+    const match = data.results?.[0];
+
+    if (!match) return null;
+
+    return {
+      name: match.name || query,
+      country: match.country || null,
+      latitude: match.latitude,
+      longitude: match.longitude,
+      timezone: match.timezone || null
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+async function enrichWithWeatherInfo(tripJson, analysis, timeZone) {
+  if (analysis.tool_needed !== "weather" && analysis.intent !== "weather") {
+    return null;
+  }
+
+  const upcomingEvent = getUpcomingTripEvent(tripJson, timeZone);
+  const targetDate =
+    resolveDateReference(analysis, timeZone) ||
+    upcomingEvent?.start ||
+    getTodayInTimezone(timeZone || "UTC");
+  const targetDateKey = formatDateKey(targetDate);
+
+  const targetCity =
+    analysis.city ||
+    inferCityForDate(tripJson, targetDate) ||
+    getDefaultTripCity(tripJson);
+
+  if (!targetCity) {
+    return {
+      type: "weather_missing_location",
+      city: null,
+      requested_date: targetDateKey,
+      note: "No pude identificar la ciudad para consultar el clima."
+    };
+  }
+
+  const location = await geocodeWeatherLocation(targetCity);
+
+  if (!location) {
+    return {
+      type: "weather_geocoding_failed",
+      city: targetCity,
+      requested_date: targetDateKey,
+      note: "No pude ubicar la ciudad para consultar el clima."
+    };
+  }
+
+  try {
+    const params = new URLSearchParams({
+      latitude: String(location.latitude),
+      longitude: String(location.longitude),
+      current: "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,precipitation",
+      daily: "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum",
+      timezone: "auto",
+      forecast_days: "16"
+    });
+
+    const res = await fetch(`https://api.open-meteo.com/v1/forecast?${params}`, {
+      headers: {
+        "Accept": "application/json"
+      }
+    });
+
+    if (!res.ok) {
+      return {
+        type: "weather_failed",
+        city: targetCity,
+        requested_date: targetDateKey,
+        note: `Open-Meteo respondió HTTP ${res.status}.`
+      };
+    }
+
+    const data = await res.json();
+    const timeList = data.daily?.time || [];
+    const index = timeList.indexOf(targetDateKey);
+
+    if (index === -1) {
+      return {
+        type: "weather_out_of_range",
+        city: targetCity,
+        requested_date: targetDateKey,
+        note: "La fecha solicitada está fuera de la ventana de pronóstico disponible."
+      };
+    }
+
+    return {
+      type: "weather_forecast",
+      city: targetCity,
+      resolved_location_name: [location.name, location.country].filter(Boolean).join(", "),
+      requested_date: targetDateKey,
+      timezone: data.timezone || location.timezone || null,
+      summary: describeWeatherCode(data.daily.weather_code?.[index]),
+      current: data.current || null,
+      daily: {
+        weather_code: data.daily.weather_code?.[index] ?? null,
+        temperature_max: data.daily.temperature_2m_max?.[index] ?? null,
+        temperature_min: data.daily.temperature_2m_min?.[index] ?? null,
+        precipitation_probability_max: data.daily.precipitation_probability_max?.[index] ?? null,
+        precipitation_sum: data.daily.precipitation_sum?.[index] ?? null
+      }
+    };
+  } catch (error) {
+    return {
+      type: "weather_failed",
+      city: targetCity,
+      requested_date: targetDateKey,
+      note: String(error)
+    };
+  }
+}
+
 function collectTripEvents(tripJson) {
   const events = [];
 
@@ -452,6 +646,7 @@ Principios:
 - Para hoteles, usa nombre + dirección + ciudad si están disponibles.
 - Para aeropuertos, usa código IATA + nombre o ciudad si está disponible.
 - Para estaciones, terminales o puntos de interés, usa el nombre del lugar más ciudad.
+- Si la pregunta es sobre clima, intenta identificar la ciudad relevante y la fecha pedida. Si el usuario no dice fecha, usa hoy o el siguiente evento si el contexto lo sugiere.
 - Solo pide aclaración si de verdad falta un dato indispensable y no puede inferirse del viaje.
 - Si es una pregunta general de movilidad sin destino concreto, puedes usar intent="route" pero origin_query o destination_query pueden ser null.
 - Responde SOLO JSON válido.
@@ -1400,6 +1595,7 @@ let analysis = await classifyIntentWithDeepSeek(
         let transportInfo = null;
         let transportUsed = false;
         let transportError = null;
+        let weatherInfo = null;
 
         try {
           transportInfo = await enrichWithTransportInfo(tripJson, analysis);
@@ -1411,6 +1607,21 @@ let analysis = await classifyIntentWithDeepSeek(
         } catch (e) {
           transportUsed = false;
           transportError = String(e);
+        }
+
+        try {
+          weatherInfo = await enrichWithWeatherInfo(tripJson, analysis, timeZone);
+
+          if (weatherInfo) {
+            context.weather_info = weatherInfo;
+          }
+        } catch (e) {
+          context.weather_info = {
+            type: "weather_failed",
+            city: analysis.city || null,
+            requested_date: null,
+            note: String(e)
+          };
         }
 
         const questionNorm = normalizeText(question);
@@ -1464,6 +1675,7 @@ let analysis = await classifyIntentWithDeepSeek(
 Eres Yompr Personal Concierge, un asistente de viaje premium. Responde en español amable, cálido, profesional, claro, natural y elegante, como el mejor asistente personal del mundo.
 
 Usa solo la información del viaje proporcionada y los datos calculados en transport_info. Si no sabes algo con certeza, dilo. No inventes datos.
+Si weather_info existe, úsalo como fuente principal para responder preguntas de clima.
 
 La respuesta debe ser concisa, lógica y responder lo que el cliente necesita sin hacerla innecesariamente extensa.
 No seas condescendiente, sé amable y directo.
@@ -1521,6 +1733,11 @@ Rutas:
 - Si transport_info.type = "route_without_destination", NO des tiempos ni alternativas como si fueran definitivas. Explica que falta el destino exacto para calcular la ruta y pide el aeropuerto, estación, terminal o punto al que quiere ir.
 - Si transport_info.type = "geocoding_failed", no inventes distancia, duración ni rangos aproximados por conocimiento general. Di que no se pudo calcular la ruta con precisión, ofrece el enlace de Google Maps si existe y pide una dirección más precisa si hace falta.
 - Si transport_info.type = "route_calculation_failed", no inventes tiempos ni distancias. Di que sí se ubicaron origen/destino, pero no se pudo calcular la ruta por OSRM; ofrece el enlace de Google Maps.
+- Si weather_info.type = "weather_forecast", úsalo para temperatura, lluvia y condiciones del día solicitado.
+- Si weather_info.type = "weather_missing_location", pide la ciudad de forma breve.
+- Si weather_info.type = "weather_geocoding_failed", explica que no pudiste ubicar la ciudad y pide una referencia más precisa.
+- Si weather_info.type = "weather_out_of_range", explica que el pronóstico no llega a esa fecha.
+- Si weather_info.type = "weather_failed", di que no pudiste consultar el clima en este momento y no inventes datos.
 - Si el análisis estructurado incluye origin_query y destination_query, respétalos como la interpretación principal de la ruta.
 - No cambies la ciudad o el hotel de origen si origin_query ya fue resuelto por el clasificador.
 - Si el usuario habla de "ir a", "salir hacia", "cuando vaya a" otra ciudad, revisa el JSON completo para ubicar la etapa previa del viaje.
