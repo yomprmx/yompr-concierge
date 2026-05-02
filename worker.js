@@ -773,44 +773,44 @@ async function geocodeDetailed(query, options = {}, env = null) {
     } catch (_) {}
   }
 
-  const queries = buildGeocodeQueries(
-    query,
-    options.city || null,
-    options.country || null
-  );
+  const base = String(query).trim();
+  const cityText = options.city ? String(options.city).trim() : "";
+  const candidates = uniqueValues([
+    base,
+    cityText && !normalizeText(base).includes(normalizeText(cityText)) ? `${base}, ${cityText}` : null,
+    replaceCountryAliases(simplifyPlaceQuery(base))
+  ]);
+
   const attemptedQueries = [];
   let lastError = null;
 
-  for (const candidate of queries) {
+  for (const candidate of candidates) {
     attemptedQueries.push(candidate);
 
     try {
       const params = new URLSearchParams({
-        q: candidate,
-        format: "jsonv2",
-        limit: "1",
-        addressdetails: "1",
-        namedetails: "1",
-        "accept-language": "es,en"
+        address: candidate,
+        key: env?.GOOGLE_MAPS_KEY || ""
       });
 
-      const res = await fetch(`https://nominatim.openstreetmap.org/search?${params}`, {
-        headers: {
-          "Accept": "application/json",
-          "User-Agent": "Yompr Concierge travel assistant"
-        }
-      });
+      const res = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?${params}`);
 
       if (!res.ok) {
-        lastError = `HTTP ${res.status}${res.statusText ? " " + res.statusText : ""}`;
+        lastError = `HTTP ${res.status}`;
         continue;
       }
 
       const data = await res.json();
 
-      if (Array.isArray(data) && data.length) {
-        const lat = parseFloat(data[0].lat);
-        const lon = parseFloat(data[0].lon);
+      if (data.status === "REQUEST_DENIED") {
+        lastError = "REQUEST_DENIED: " + (data.error_message || "API key inválida");
+        break;
+      }
+
+      if (data.status === "OK" && data.results?.length) {
+        const location = data.results[0].geometry.location;
+        const lat = location.lat;
+        const lon = location.lng;
 
         if (Number.isFinite(lat) && Number.isFinite(lon)) {
           const value = {
@@ -818,7 +818,7 @@ async function geocodeDetailed(query, options = {}, env = null) {
             result: {
               query,
               attempted_query: candidate,
-              display_name: data[0].display_name || null,
+              display_name: data.results[0].formatted_address || null,
               lat,
               lon
             },
@@ -855,20 +855,35 @@ async function geocode(query, options = {}, env = null) {
   return detailed.result;
 }
 
-async function getRoute(from, to, mode = "driving") {
+async function getRoute(from, to, mode = "driving", env = null) {
   try {
-    const profileMap = {
-      driving: "driving",
-      walking: "foot"
+    const modeMap = {
+      driving: "DRIVE",
+      walking: "WALK",
+      transit: "TRANSIT"
     };
 
-    const profile = profileMap[mode] || "driving";
+    const travelMode = modeMap[mode] || "DRIVE";
 
-    const url =
-      `https://router.project-osrm.org/route/v1/${profile}/` +
-      `${from.lon},${from.lat};${to.lon},${to.lat}?overview=false`;
+    const body = {
+      origin: { location: { latLng: { latitude: from.lat, longitude: from.lon } } },
+      destination: { location: { latLng: { latitude: to.lat, longitude: to.lon } } },
+      travelMode
+    };
 
-    const res = await fetch(url);
+    if (travelMode === "DRIVE") {
+      body.routingPreference = "TRAFFIC_AWARE";
+    }
+
+    const res = await fetch("https://routes.googleapis.com/directions/v2:computeRoutes", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": env?.GOOGLE_MAPS_KEY || "",
+        "X-Goog-FieldMask": "routes.duration,routes.distanceMeters"
+      },
+      body: JSON.stringify(body)
+    });
 
     if (!res.ok) return null;
 
@@ -877,11 +892,13 @@ async function getRoute(from, to, mode = "driving") {
     if (!data.routes?.length) return null;
 
     const route = data.routes[0];
+    const durationSeconds = parseInt(route.duration) || 0;
+    const distanceMeters = route.distanceMeters || 0;
 
     return {
       mode,
-      distance_km: route.distance / 1000,
-      duration_min: route.duration / 60
+      distance_km: distanceMeters / 1000,
+      duration_min: durationSeconds / 60
     };
   } catch (_) {
     return null;
@@ -995,8 +1012,11 @@ const destinationCoords = destinationGeo.result;
     };
   }
 
-  const walkingRoute = await getRoute(originCoords, destinationCoords, "walking");
-  const drivingRoute = await getRoute(originCoords, destinationCoords, "driving");
+  const [walkingRoute, drivingRoute, transitRoute] = await Promise.all([
+    getRoute(originCoords, destinationCoords, "walking", env),
+    getRoute(originCoords, destinationCoords, "driving", env),
+    getRoute(originCoords, destinationCoords, "transit", env)
+  ]);
 
   const options = {
     walking: walkingRoute
@@ -1017,13 +1037,20 @@ const destinationCoords = destinationGeo.result;
         }
       : null,
 
-    transit: {
-      mode: "transit",
-      duration_min: null,
-      distance_km: null,
-      maps_link: buildGoogleMapsLink(origin, destination, "transit"),
-      note: "El transporte público requiere horarios y rutas en tiempo real; confirma el tiempo exacto en Google Maps."
-    }
+    transit: transitRoute
+      ? {
+          mode: "transit",
+          duration_min: Math.round(transitRoute.duration_min),
+          distance_km: Math.round(transitRoute.distance_km * 10) / 10,
+          maps_link: buildGoogleMapsLink(origin, destination, "transit")
+        }
+      : {
+          mode: "transit",
+          duration_min: null,
+          distance_km: null,
+          maps_link: buildGoogleMapsLink(origin, destination, "transit"),
+          note: "No se encontró ruta de transporte público; consulta opciones en Google Maps."
+        }
   };
 
   let routeError = null;
@@ -1032,8 +1059,10 @@ const destinationCoords = destinationGeo.result;
     routeError = "walking_route_not_found";
   } else if (requestedMode === "driving" && !options.driving) {
     routeError = "driving_route_not_found";
-  } else if (requestedMode === "all" && !options.walking && !options.driving) {
-    routeError = "osrm_route_not_found";
+  } else if (requestedMode === "transit" && !transitRoute) {
+    routeError = "transit_route_not_found";
+  } else if (requestedMode === "all" && !options.walking && !options.driving && !transitRoute) {
+    routeError = "route_not_found";
   }
 
   if (routeError) {
@@ -1069,7 +1098,7 @@ const destinationCoords = destinationGeo.result;
   } else if (requestedMode === "transit") {
     primary = options.transit;
   } else {
-    primary = options.walking || options.driving || options.transit;
+    primary = options.driving || options.walking || (transitRoute ? options.transit : null);
   }
 
   return {
@@ -1518,7 +1547,7 @@ Rutas:
 - Si el usuario pregunta “está cerca”, responde con distancia y duración caminando cuando estén disponibles.
 - Si transport_info.type = "route_without_destination", NO des tiempos ni alternativas como si fueran definitivas. Explica que falta el destino exacto para calcular la ruta y pide el aeropuerto, estación, terminal o punto al que quiere ir.
 - Si transport_info.type = "geocoding_failed", no inventes distancia, duración ni rangos aproximados por conocimiento general. Di que no se pudo calcular la ruta con precisión, ofrece el enlace de Google Maps si existe y pide una dirección más precisa si hace falta.
-- Si transport_info.type = "route_calculation_failed", no inventes tiempos ni distancias. Di que sí se ubicaron origen/destino, pero no se pudo calcular la ruta por OSRM; ofrece el enlace de Google Maps.
+- Si transport_info.type = "route_calculation_failed", no inventes tiempos ni distancias. Di que sí se ubicaron origen/destino, pero no se pudo calcular la ruta; ofrece el enlace de Google Maps.
 - Si el análisis estructurado incluye origin_query y destination_query, respétalos como la interpretación principal de la ruta.
 - No cambies la ciudad o el hotel de origen si origin_query ya fue resuelto por el clasificador.
 - Si el usuario habla de "ir a", "salir hacia", "cuando vaya a" otra ciudad, revisa el JSON completo para ubicar la etapa previa del viaje.
