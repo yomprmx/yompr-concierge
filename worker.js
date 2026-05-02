@@ -775,11 +775,30 @@ async function geocodeDetailed(query, options = {}, env = null) {
 
   const base = String(query).trim();
   const cityText = options.city ? String(options.city).trim() : "";
-  const candidates = uniqueValues([
-    base,
-    cityText && !normalizeText(base).includes(normalizeText(cityText)) ? `${base}, ${cityText}` : null,
-    replaceCountryAliases(simplifyPlaceQuery(base))
-  ]);
+
+  const iataCode = extractIataCode(base);
+  const isAirportLike = iataCode || /\b(aeropuerto|airport|aéroport|flughafen|aeroporto)\b/i.test(base);
+
+  const candidateList = [];
+
+  // Para aeropuertos, el código IATA como primera opción es lo más preciso
+  if (iataCode) {
+    candidateList.push(`${iataCode} airport`);
+    if (cityText) candidateList.push(`${iataCode} airport ${cityText}`);
+  }
+
+  candidateList.push(base);
+  if (cityText && !normalizeText(base).includes(normalizeText(cityText))) {
+    candidateList.push(`${base}, ${cityText}`);
+  }
+  const simplified = replaceCountryAliases(simplifyPlaceQuery(base));
+  if (simplified !== base) candidateList.push(simplified);
+  if (isAirportLike && !iataCode) {
+    // Quitar palabras genéricas para que Google encuentre el aeropuerto por nombre propio
+    candidateList.push(removeGenericPlaceWords(simplified));
+  }
+
+  const candidates = uniqueValues(candidateList);
 
   const attemptedQueries = [];
   let lastError = null;
@@ -1119,6 +1138,10 @@ const destinationCoords = destinationGeo.result;
     maps_link: primary?.maps_link || buildGoogleMapsLink(origin, destination),
     geocode_origin_display_name: originCoords.display_name || null,
     geocode_destination_display_name: destinationCoords.display_name || null,
+    geocode_origin_lat: originCoords.lat || null,
+    geocode_origin_lon: originCoords.lon || null,
+    geocode_destination_lat: destinationCoords.lat || null,
+    geocode_destination_lon: destinationCoords.lon || null,
     options,
     geocode_origin_attempted_query: originGeo.attempted_queries.join(" | ") || originCoords.attempted_query || null,
     geocode_destination_attempted_query: destinationGeo.attempted_queries.join(" | ") || destinationCoords.attempted_query || null,
@@ -1155,11 +1178,22 @@ async function saveChatLog(env, log) {
       transport_destination: log.transport_destination || null,
       transport_error: log.transport_error || null,
 
+      walking_duration_min: log.walking_duration_min ?? null,
+      walking_distance_km: log.walking_distance_km ?? null,
+      driving_duration_min: log.driving_duration_min ?? null,
+      driving_distance_km: log.driving_distance_km ?? null,
+      transit_duration_min: log.transit_duration_min ?? null,
+      transit_distance_km: log.transit_distance_km ?? null,
+
       route_direction: log.route_direction || null,
       route_mode: log.route_mode || null,
       place_name: log.place_name || null,
       geocode_origin: log.geocode_origin || null,
       geocode_destination: log.geocode_destination || null,
+      geocode_origin_lat: log.geocode_origin_lat ?? null,
+      geocode_origin_lon: log.geocode_origin_lon ?? null,
+      geocode_destination_lat: log.geocode_destination_lat ?? null,
+      geocode_destination_lon: log.geocode_destination_lon ?? null,
 
       error_stage: log.error_stage || null,
       raw_error: log.raw_error || null,
@@ -1203,35 +1237,47 @@ export default {
 
       logs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
-      const rows = logs.map(log => `
-  <tr>
+      const rows = logs.map(log => {
+        const hasRouteError = log.transport_error || log.geocode_origin_error || log.geocode_destination_error;
+        const rowStyle = hasRouteError ? ' style="background:#fff3cd;"' : (log.intent === "error" ? ' style="background:#fde8e8;"' : "");
+        const coordOrigin = (log.geocode_origin_lat && log.geocode_origin_lon)
+          ? `${(+log.geocode_origin_lat).toFixed(4)}, ${(+log.geocode_origin_lon).toFixed(4)}`
+          : "—";
+        const coordDest = (log.geocode_destination_lat && log.geocode_destination_lon)
+          ? `${(+log.geocode_destination_lat).toFixed(4)}, ${(+log.geocode_destination_lon).toFixed(4)}`
+          : "—";
+        const walking = log.walking_duration_min != null ? `${log.walking_duration_min}min / ${log.walking_distance_km}km` : "—";
+        const driving = log.driving_duration_min != null ? `${log.driving_duration_min}min / ${log.driving_distance_km}km` : "—";
+        const transit = log.transit_duration_min != null ? `${log.transit_duration_min}min / ${log.transit_distance_km}km` : "—";
+        return `
+  <tr${rowStyle}>
     <td>${escapeHtml(log.created_at || "")}</td>
     <td>${escapeHtml(log.trip_id || "")}</td>
     <td>${escapeHtml(log.intent || "")}</td>
     <td>${escapeHtml(log.scope || "")}</td>
     <td>${escapeHtml(log.city || "")}</td>
-    <td>${log.thinking_enabled ? "🧠 Sí" : "—"}</td>
-    <td>${escapeHtml(log.approximate_context_tokens || "")}</td>
+    <td>${log.thinking_enabled ? "Sí" : "—"}</td>
+    <td>${escapeHtml(String(log.approximate_context_tokens || ""))}</td>
     <td>${log.transport_used ? "Sí" : "—"}</td>
     <td>${escapeHtml(log.transport_type || "")}</td>
-    <td>${escapeHtml(log.transport_duration_min || "")}</td>
-    <td>${escapeHtml(log.transport_distance_km || "")}</td>
-    <td>${escapeHtml(log.transport_error || "")}</td>
     <td>${escapeHtml(log.route_direction || "")}</td>
     <td>${escapeHtml(log.route_mode || "")}</td>
+    <td>${walking}</td>
+    <td>${driving}</td>
+    <td>${transit}</td>
+    <td style="color:${log.transport_error ? '#c00' : 'inherit'};">${escapeHtml(log.transport_error || "—")}</td>
     <td style="max-width: 220px; white-space: pre-wrap;">${escapeHtml(log.transport_origin || "")}</td>
     <td style="max-width: 220px; white-space: pre-wrap;">${escapeHtml(log.transport_destination || "")}</td>
-    <td style="max-width: 180px; white-space: pre-wrap;">${escapeHtml(log.place_name || "")}</td>
-    <td>${escapeHtml(log.geocode_origin || "")}</td>
-    <td>${escapeHtml(log.geocode_destination || "")}</td>
-    <td style="max-width: 280px; white-space: pre-wrap;">${escapeHtml(log.geocode_origin_attempted_query || "")}</td>
-    <td style="max-width: 280px; white-space: pre-wrap;">${escapeHtml(log.geocode_destination_attempted_query || "")}</td>
-    <td style="max-width: 180px; white-space: pre-wrap;">${escapeHtml(log.geocode_origin_error || "")}</td>
-    <td style="max-width: 180px; white-space: pre-wrap;">${escapeHtml(log.geocode_destination_error || "")}</td>
+    <td style="max-width: 240px; white-space: pre-wrap;">${escapeHtml(log.geocode_origin || "")}<br><small style="color:#666;">${coordOrigin}</small></td>
+    <td style="max-width: 240px; white-space: pre-wrap;">${escapeHtml(log.geocode_destination || "")}<br><small style="color:#666;">${coordDest}</small></td>
+    <td style="max-width: 260px; white-space: pre-wrap; font-size:11px; color:#555;">${escapeHtml(log.geocode_origin_attempted_query || "")}</td>
+    <td style="max-width: 260px; white-space: pre-wrap; font-size:11px; color:#555;">${escapeHtml(log.geocode_destination_attempted_query || "")}</td>
+    <td style="color:#c00; max-width:160px; white-space:pre-wrap;">${escapeHtml(log.geocode_origin_error || "")}</td>
+    <td style="color:#c00; max-width:160px; white-space:pre-wrap;">${escapeHtml(log.geocode_destination_error || "")}</td>
     <td style="max-width: 260px; white-space: pre-wrap;">${escapeHtml(log.question || "")}</td>
     <td style="max-width: 480px; white-space: pre-wrap;">${escapeHtml(log.answer || "")}</td>
-  </tr>
-`).join("");
+  </tr>`;
+      }).join("");
 
       return new Response(`
 <!DOCTYPE html>
@@ -1239,12 +1285,25 @@ export default {
 <head>
   <meta charset="UTF-8" />
   <title>Yompr Concierge Logs</title>
+  <style>
+    body { font-family: Arial; padding: 24px; }
+    table { border-collapse: collapse; font-size: 12px; }
+    th { background: #1f2937; color: #fff; padding: 8px; position: sticky; top: 0; }
+    td { padding: 7px 8px; border: 1px solid #e5e7eb; vertical-align: top; }
+    tr:hover td { background: #f0f9ff; }
+    .legend { margin-bottom: 12px; font-size: 12px; }
+    .legend span { display: inline-block; width: 14px; height: 14px; margin-right: 4px; vertical-align: middle; border-radius: 2px; }
+  </style>
 </head>
-<body style="font-family: Arial; padding: 24px;">
+<body>
   <h1>Yompr Concierge Logs</h1>
   <p>Últimas 200 preguntas registradas.</p>
+  <div class="legend">
+    <span style="background:#fff3cd;"></span> Advertencia (error de geocoding/ruta) &nbsp;
+    <span style="background:#fde8e8;"></span> Error crítico
+  </div>
 
-  <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; font-size: 13px;">
+  <table border="1" cellpadding="8" cellspacing="0">
     <thead>
       <tr>
         <th>Fecha</th>
@@ -1253,23 +1312,23 @@ export default {
         <th>Scope</th>
         <th>City</th>
         <th>Thinking</th>
-        <th>Tokens aprox</th>
-        <th>OSM</th>
+        <th>Tokens</th>
+        <th>Ruta calc.</th>
         <th>Transport type</th>
-        <th>Ruta min</th>
-        <th>Dist km</th>
-        <th>Error OSM</th>
-        <th>Route direction</th>
-        <th>Route mode</th>
+        <th>Direction</th>
+        <th>Mode</th>
+        <th>🚶 Walking</th>
+        <th>🚗 Driving</th>
+        <th>🚇 Transit</th>
+        <th>Error ruta</th>
         <th>Origin query</th>
         <th>Destination query</th>
-        <th>Place name</th>
-        <th>Geocode origin</th>
-        <th>Geocode destination</th>
-        <th>Origin attempted</th>
-        <th>Destination attempted</th>
-        <th>Origin error</th>
-        <th>Destination error</th>
+        <th>Geocode origen (+ coords)</th>
+        <th>Geocode destino (+ coords)</th>
+        <th>Queries origen intentadas</th>
+        <th>Queries destino intentadas</th>
+        <th>Error geocode origen</th>
+        <th>Error geocode destino</th>
         <th>Pregunta</th>
         <th>Respuesta</th>
       </tr>
@@ -1614,11 +1673,22 @@ question
   transport_destination: transportInfo?.destination || null,
   transport_error: transportError || transportInfo?.geocode_error || transportInfo?.route_error || null,
 
+  walking_duration_min: transportInfo?.options?.walking?.duration_min ?? null,
+  walking_distance_km: transportInfo?.options?.walking?.distance_km ?? null,
+  driving_duration_min: transportInfo?.options?.driving?.duration_min ?? null,
+  driving_distance_km: transportInfo?.options?.driving?.distance_km ?? null,
+  transit_duration_min: transportInfo?.options?.transit?.duration_min ?? null,
+  transit_distance_km: transportInfo?.options?.transit?.distance_km ?? null,
+
   route_direction: analysis.route_direction || null,
   route_mode: analysis.route_mode || null,
   place_name: analysis.place_name || null,
   geocode_origin: transportInfo?.geocode_origin_display_name || null,
   geocode_destination: transportInfo?.geocode_destination_display_name || null,
+  geocode_origin_lat: transportInfo?.geocode_origin_lat || null,
+  geocode_origin_lon: transportInfo?.geocode_origin_lon || null,
+  geocode_destination_lat: transportInfo?.geocode_destination_lat || null,
+  geocode_destination_lon: transportInfo?.geocode_destination_lon || null,
   geocode_origin_attempted_query: transportInfo?.geocode_origin_attempted_query || null,
   geocode_destination_attempted_query: transportInfo?.geocode_destination_attempted_query || null,
   geocode_origin_error: transportInfo?.geocode_origin_error || null,
@@ -1989,4 +2059,3 @@ question
     return new Response("Ruta no encontrada", { status: 404 });
   }
 };
-
