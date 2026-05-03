@@ -182,7 +182,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    if (url.pathname === "/chat-client-v5.js") {
+    if (url.pathname === "/chat-client-v6.js") {
       return new Response(CHAT_CLIENT_JS, {
         headers: {
           "Content-Type": "application/javascript; charset=UTF-8",
@@ -953,7 +953,7 @@ question
 </head>
 
 <body>
-  <div class="app" id="appRoot" data-trip-id="${escapeHtml(tripId)}">
+  <div class="app" id="appRoot" data-trip-id="${escapeHtml(tripId)}" data-chat-version="v6">
     <div class="header">
       <h1>${tripName}</h1>
       <p>${destinationText}</p>
@@ -980,9 +980,7 @@ question
       <button id="sendButton" type="button">Enviar</button>
     </div>
   </div>
-  <script>
-${CHAT_CLIENT_JS}
-  </script>
+  <script src="/chat-client-v6.js" defer></script>
 </body>
 </html>
 `, {
