@@ -93,7 +93,7 @@ const CHAT_CLIENT_JS = `
         normalizedHref.indexOf("maps.google.com") !== -1 ||
         normalizedHref.indexOf("google.com/maps") !== -1 ||
         normalizedHref.indexOf("google.com/travel") !== -1;
-      a.textContent = isMaps ? "Ver en Google Maps" : (hrefUrl.length > 80 ? "Abrir enlace" : hrefUrl);
+      a.textContent = isMaps ? "Ver en Google Maps" : "Abrir enlace";
       a.style.cssText = "color:#3b82f6;text-decoration:underline;font-weight:500;";
       bubble.appendChild(a);
 
@@ -182,11 +182,13 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    if (url.pathname === "/chat-client.js") {
+    if (url.pathname === "/chat-client-v4.js") {
       return new Response(CHAT_CLIENT_JS, {
         headers: {
           "Content-Type": "application/javascript; charset=UTF-8",
-          "Cache-Control": "no-store"
+          "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+          "Pragma": "no-cache",
+          "Expires": "0"
         }
       });
     }
@@ -978,10 +980,17 @@ question
       <button id="sendButton" type="button">Enviar</button>
     </div>
   </div>
-  <script src="/chat-client.js?v=3" defer></script>
+  <script src="/chat-client-v4.js" defer></script>
 </body>
 </html>
-`, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
+`, {
+  headers: {
+    "Content-Type": "text/html; charset=UTF-8",
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0"
+  }
+});
     }
 
     return new Response("Ruta no encontrada", { status: 404 });
