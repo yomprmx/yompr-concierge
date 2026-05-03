@@ -399,23 +399,13 @@ const CHAT_CLIENT_JS = `
 (() => {
   const appRoot = document.getElementById("appRoot");
   const tripId = appRoot && appRoot.dataset ? appRoot.dataset.tripId || "" : "";
-  const composer = document.getElementById("composer");
   const questionInput = document.getElementById("question");
   const sendButton = document.getElementById("sendButton");
   const messages = document.getElementById("messages");
-  const historyField = document.getElementById("historyField");
-  const timeZoneField = document.getElementById("timeZoneField");
-  const localDateField = document.getElementById("localDateField");
 
-  if (!tripId || !composer || !questionInput || !sendButton || !messages) return;
+  if (!tripId || !questionInput || !sendButton || !messages) return;
 
   let conversationHistory = [];
-  try {
-    conversationHistory = historyField && historyField.value ? JSON.parse(historyField.value) : [];
-    if (!Array.isArray(conversationHistory)) conversationHistory = [];
-  } catch (_) {
-    conversationHistory = [];
-  }
   let isSending = false;
 
   function scrollToBottom() {
@@ -511,8 +501,6 @@ const CHAT_CLIENT_JS = `
 
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const localDate = new Date().toLocaleDateString("en-CA", { timeZone: timeZone });
-    if (timeZoneField) timeZoneField.value = timeZone;
-    if (localDateField) localDateField.value = localDate;
 
     try {
       const res = await fetch("/api/chat", {
@@ -541,7 +529,6 @@ const CHAT_CLIENT_JS = `
       conversationHistory.push({ role: "user", content: question });
       conversationHistory.push({ role: "assistant", content: answer });
       conversationHistory = conversationHistory.slice(-8);
-      if (historyField) historyField.value = JSON.stringify(conversationHistory);
     } catch (error) {
       thinkingRow.remove();
       addMessage("assistant", "Error de conexión: " + error.message);
@@ -554,7 +541,10 @@ const CHAT_CLIENT_JS = `
     }
   }
 
-  composer.addEventListener("submit", ask);
+  sendButton.addEventListener("click", ask);
+  questionInput.addEventListener("keydown", function(event) {
+    if (event.key === "Enter") ask(event);
+  });
 
   scrollToBottom();
 })();
@@ -563,17 +553,6 @@ const CHAT_CLIENT_JS = `
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-
-    if (url.pathname === "/chat-client-v6.js" || url.pathname === "/v/chat-client-v7.js") {
-      return new Response(CHAT_CLIENT_JS, {
-        headers: {
-          "Content-Type": "application/javascript; charset=UTF-8",
-          "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-          "Pragma": "no-cache",
-          "Expires": "0"
-        }
-      });
-    }
 
     if (url.pathname === "/") {
       return new Response("Yompr Concierge funcionando 🚀");
@@ -813,36 +792,6 @@ export default {
       const destinationText = trip.destination
         ? "Destino: " + escapeHtml(trip.destination)
         : "Tu concierge personal de viaje";
-      let initialMessages = [
-        {
-          role: "assistant",
-          content: "Hola, soy tu concierge personal de Yompr. Puedes preguntarme sobre vuelos, hospedaje, actividades, traslados o recomendaciones de tu viaje."
-        }
-      ];
-
-      if (request.method === "POST") {
-        const formData = await request.formData();
-        const question = String(formData.get("question") || "").trim();
-        const history = parseConversationHistory(formData.get("history"));
-
-        if (question) {
-          const result = await processChatRequest({
-            tripId,
-            question,
-            timeZone: String(formData.get("timeZone") || ""),
-            localDate: String(formData.get("localDate") || ""),
-            conversationHistory: history
-          }, env);
-
-          initialMessages = history
-            .concat([{ role: "user", content: question }])
-            .concat([{ role: "assistant", content: result.payload.answer || "No pude responder." }])
-            .slice(-9);
-        } else if (history.length) {
-          initialMessages = history.slice(-9);
-        }
-      }
-
       return new Response(`
 <!DOCTYPE html>
 <html>
@@ -1019,7 +968,7 @@ export default {
 </head>
 
 <body>
-  <div class="app" id="appRoot" data-trip-id="${escapeHtml(tripId)}" data-chat-version="v7">
+  <div class="app" id="appRoot" data-trip-id="${escapeHtml(tripId)}" data-chat-version="v8">
     <div class="header">
       <h1>${tripName}</h1>
       <p>${destinationText}</p>
@@ -1032,23 +981,23 @@ export default {
     </div>
 
     <div id="messages" class="messages">
-${renderInitialMessages(initialMessages)}
+      <div class="message-row assistant">
+        <div class="bubble">Hola, soy tu concierge personal de Yompr. Puedes preguntarme sobre vuelos, hospedaje, actividades, traslados o recomendaciones de tu viaje.</div>
+      </div>
     </div>
 
-    <form id="composer" class="composer" method="POST">
+    <div id="composer" class="composer">
       <input
         id="question"
-        name="question"
         placeholder="Escribe tu pregunta..."
         autocomplete="off"
       />
-      <input id="historyField" name="history" type="hidden" value="${escapeHtml(JSON.stringify(initialMessages.slice(-8)))}" />
-      <input id="timeZoneField" name="timeZone" type="hidden" value="" />
-      <input id="localDateField" name="localDate" type="hidden" value="" />
-      <button id="sendButton" type="submit">Enviar</button>
-    </form>
+      <button id="sendButton" type="button">Enviar</button>
+    </div>
   </div>
-  <script src="chat-client-v7.js" defer></script>
+  <script>
+${CHAT_CLIENT_JS}
+  </script>
 </body>
 </html>
 `, {
