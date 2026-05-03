@@ -788,7 +788,7 @@ question
         placeholder="Escribe tu pregunta..."
         autocomplete="off"
       />
-      <button id="sendButton" type="submit">Enviar</button>
+      <button id="sendButton" type="button" onclick="ask(event)">Enviar</button>
     </form>
   </div>
 
