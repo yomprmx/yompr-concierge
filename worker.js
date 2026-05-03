@@ -435,6 +435,9 @@ Formato exacto de respuesta:
   "place_name": "lugar mencionado por el usuario si aplica, si no null",
   "origin_query": "origen textual completo para calcular ruta si aplica, si no null",
   "destination_query": "destino textual completo para calcular ruta si aplica, si no null",
+  "recommendation_type": "restaurante | bar | cafe | museo | parque | tienda | hotel | entretenimiento | otro | null — solo si intent=recommendation",
+  "recommendation_query": "query en inglés listo para Google Places Text Search, ej: 'cheap french restaurant Montmartre Paris' — solo si intent=recommendation, si no null",
+  "price_preference": "economico | moderado | caro | null — solo si intent=recommendation",
   "confidence": 0-1,
   "needs_clarification": true/false,
   "clarification_question": "pregunta corta si falta un dato indispensable"
@@ -453,6 +456,10 @@ Principios:
 - Para estaciones, terminales o puntos de interés, usa el nombre del lugar más ciudad.
 - Solo pide aclaración si de verdad falta un dato indispensable y no puede inferirse del viaje.
 - Si es una pregunta general de movilidad sin destino concreto, puedes usar intent="route" pero origin_query o destination_query pueden ser null.
+- Si intent="recommendation": llena siempre recommendation_type, recommendation_query y price_preference.
+  - recommendation_query debe estar en inglés, ser específico, incluir tipo de lugar + precio si aplica + barrio/ciudad. Ejemplos: "cheap french bistro Montmartre Paris", "rooftop bar Venice", "family museum Rome near Colosseum".
+  - Si el usuario no menciona precio, usa price_preference=null y omite precio en el query.
+  - Si el usuario pide algo cerca del hotel, incluye el barrio o zona del hotel en el query.
 - Responde SOLO JSON válido.
 
 - Si el usuario dice "cuando vaya a X", "para ir a X", "cuando me vaya a X", "cuando salga hacia X" o algo equivalente, interpreta que pregunta por la salida desde la etapa anterior del itinerario hacia X.
@@ -509,6 +516,9 @@ Principios:
     place_name: null,
     origin_query: null,
     destination_query: null,
+    recommendation_type: null,
+    recommendation_query: null,
+    price_preference: null,
     confidence: 0,
     needs_clarification: false,
     clarification_question: null
@@ -1216,6 +1226,114 @@ const destinationCoords = destinationGeo.result;
   };
 }
 
+const PRICE_LEVEL_MAP = {
+  "PRICE_LEVEL_FREE": "gratuito",
+  "PRICE_LEVEL_INEXPENSIVE": "económico ($)",
+  "PRICE_LEVEL_MODERATE": "precio moderado ($$)",
+  "PRICE_LEVEL_EXPENSIVE": "caro ($$$)",
+  "PRICE_LEVEL_VERY_EXPENSIVE": "muy caro ($$$$)"
+};
+
+async function searchPlacesRecommendations(analysis, tripJson, env) {
+  if (!env?.GOOGLE_MAPS_KEY) return null;
+
+  const query = analysis.recommendation_query;
+  if (!query) return null;
+
+  // Buscar el hotel de la ciudad relevante para usar como centro del location bias
+  let locationBias = null;
+  const city = analysis.city ? normalizeText(analysis.city) : null;
+
+  if (city) {
+    const hotels = tripJson.hotelVouchers || [];
+    const cityHotel = hotels.find(h =>
+      normalizeText(h.accommodationAddress || "").includes(city) ||
+      normalizeText(h.accommodationName || "").includes(city) ||
+      normalizeText(JSON.stringify(h)).includes(city)
+    );
+
+    if (cityHotel) {
+      const hotelQuery = [cityHotel.accommodationName, cityHotel.accommodationAddress]
+        .filter(Boolean)
+        .join(", ");
+      if (hotelQuery) {
+        try {
+          const hotelGeo = await geocode(hotelQuery, { city: analysis.city }, env);
+          if (hotelGeo?.lat && hotelGeo?.lon) {
+            locationBias = {
+              circle: {
+                center: { latitude: hotelGeo.lat, longitude: hotelGeo.lon },
+                radius: 2000
+              }
+            };
+          }
+        } catch (_) {}
+      }
+    }
+  }
+
+  try {
+    const body = {
+      textQuery: query,
+      maxResultCount: 8,
+      languageCode: "es"
+    };
+    if (locationBias) body.locationBias = locationBias;
+
+    const res = await fetch("https://places.googleapis.com/v1/places:searchText", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": env.GOOGLE_MAPS_KEY,
+        "X-Goog-FieldMask": [
+          "places.displayName",
+          "places.formattedAddress",
+          "places.rating",
+          "places.userRatingCount",
+          "places.priceLevel",
+          "places.editorialSummary",
+          "places.regularOpeningHours",
+          "places.googleMapsUri",
+          "places.primaryType"
+        ].join(",")
+      },
+      body: JSON.stringify(body)
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      return { places: [], query, bias_used: Boolean(locationBias), error: `Places API ${res.status}: ${errText}` };
+    }
+
+    const data = await res.json();
+
+    if (!data.places?.length) {
+      return { places: [], query, bias_used: Boolean(locationBias), error: null };
+    }
+
+    const places = data.places.slice(0, 6).map(p => ({
+      name: p.displayName?.text || null,
+      address: p.formattedAddress || null,
+      rating: p.rating ? Math.round(p.rating * 10) / 10 : null,
+      review_count: p.userRatingCount || null,
+      price_level: PRICE_LEVEL_MAP[p.priceLevel] || null,
+      description: p.editorialSummary?.text || null,
+      type: p.primaryType || null,
+      opening_hours: p.regularOpeningHours?.weekdayDescriptions || null,
+      maps_link: p.googleMapsUri || null
+    }));
+
+    return {
+      places,
+      query,
+      bias_used: Boolean(locationBias),
+      error: null
+    };
+  } catch (e) {
+    return { places: [], query, bias_used: Boolean(locationBias), error: String(e) };
+  }
+}
+
 async function saveChatLog(env, log) {
   try {
     const tripId = log.trip_id || "unknown";
@@ -1259,6 +1377,12 @@ async function saveChatLog(env, log) {
       geocode_origin_lon: log.geocode_origin_lon ?? null,
       geocode_destination_lat: log.geocode_destination_lat ?? null,
       geocode_destination_lon: log.geocode_destination_lon ?? null,
+
+      recommendations_used: log.recommendations_used || false,
+      recommendations_query: log.recommendations_query || null,
+      recommendations_count: log.recommendations_count ?? null,
+      recommendations_bias_used: log.recommendations_bias_used || false,
+      recommendations_error: log.recommendations_error || null,
 
       error_stage: log.error_stage || null,
       raw_error: log.raw_error || null,
@@ -1339,6 +1463,7 @@ export default {
     <td style="max-width: 260px; white-space: pre-wrap; font-size:11px; color:#555;">${escapeHtml(log.geocode_destination_attempted_query || "")}</td>
     <td style="color:#c00; max-width:160px; white-space:pre-wrap;">${escapeHtml(log.geocode_origin_error || "")}</td>
     <td style="color:#c00; max-width:160px; white-space:pre-wrap;">${escapeHtml(log.geocode_destination_error || "")}</td>
+    <td style="max-width:200px; white-space:pre-wrap; font-size:11px;">${log.recommendations_used ? `✅ ${log.recommendations_count} resultados<br><small style="color:#555;">${escapeHtml(log.recommendations_query || "")}</small>${log.recommendations_bias_used ? "<br><small style='color:#22a;'>📍 bias hotel</small>" : ""}` : (log.intent === "recommendation" ? `<span style="color:#c00;">Sin resultados<br><small>${escapeHtml(log.recommendations_error || "")}</small></span>` : "—")}</td>
     <td style="max-width: 260px; white-space: pre-wrap;">${escapeHtml(log.question || "")}</td>
     <td style="max-width: 480px; white-space: pre-wrap;">${escapeHtml(log.answer || "")}</td>
   </tr>`;
@@ -1394,6 +1519,7 @@ export default {
         <th>Queries destino intentadas</th>
         <th>Error geocode origen</th>
         <th>Error geocode destino</th>
+        <th>🏪 Recomendaciones</th>
         <th>Pregunta</th>
         <th>Respuesta</th>
       </tr>
@@ -1569,6 +1695,21 @@ let analysis = await classifyIntentWithDeepSeek(
           transportError = String(e);
         }
 
+        let recommendationsInfo = null;
+        let recommendationsUsed = false;
+
+        if (intent === "recommendation" && analysis.recommendation_query) {
+          try {
+            recommendationsInfo = await searchPlacesRecommendations(analysis, tripJson, env);
+            if (recommendationsInfo?.places?.length) {
+              context.recommendations_results = recommendationsInfo.places;
+              recommendationsUsed = true;
+            }
+          } catch (e) {
+            recommendationsInfo = { places: [], error: String(e) };
+          }
+        }
+
         const questionNorm = normalizeText(question);
 
         const needsThinking =
@@ -1664,6 +1805,15 @@ Estilo:
 - No uses lenguaje técnico.
 - Si haces una lista, termínala completa y cierra con una conclusión breve.
 - Si detectas emergencia o problema serio, recomienda contactar a Rigo.
+
+Recomendaciones:
+- Si context.recommendations_results existe y tiene elementos, úsalo como tu ÚNICA fuente para recomendar lugares. Prohibido inventar o añadir lugares que no estén en esa lista.
+- Elige 2 o 3 opciones de la lista. Prioriza las que tengan mejor rating y más reseñas. Si el usuario pidió precio bajo, filtra por price_level económico primero.
+- Para cada lugar recomendado incluye: nombre, descripción breve (usa el campo description si existe, si no describe el tipo brevemente), rating (ej: 4.5 ⭐ con X reseñas), precio si está disponible, horario relevante si aplica, y el maps_link como enlace clickeable.
+- Si opening_hours está disponible y la pregunta es para esta noche o hoy, menciona si está abierto.
+- No menciones todos los campos de cada lugar; sé selectivo y natural.
+- Si recommendations_results está vacío o no existe pero el intent es recommendation, di que no encontraste lugares con datos concretos en la zona y recomienda buscar en Google Maps con el tipo de lugar + barrio del hotel.
+- NUNCA inventes nombres de restaurantes, bares, museos u otros lugares que no estén en context.recommendations_results.
 
 Rutas:
 - Si transport_info.type = “calculated_route”, usa transport_info como fuente ÚNICA para distancias y tiempos. Prohibido usar conocimiento propio sobre distancias, tiempos o rutas.
@@ -1770,6 +1920,12 @@ question
   geocode_destination_attempted_query: transportInfo?.geocode_destination_attempted_query || null,
   geocode_origin_error: transportInfo?.geocode_origin_error || null,
   geocode_destination_error: transportInfo?.geocode_destination_error || null,
+
+  recommendations_used: recommendationsUsed,
+  recommendations_query: analysis.recommendation_query || null,
+  recommendations_count: recommendationsInfo?.places?.length ?? null,
+  recommendations_bias_used: recommendationsInfo?.bias_used || false,
+  recommendations_error: recommendationsInfo?.error || null,
 
   used_transport_in_answer:
     answer.includes("estimado") ||
