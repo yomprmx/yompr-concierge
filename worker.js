@@ -782,15 +782,14 @@ question
       </div>
     </div>
 
-    <div class="composer">
+    <form id="composer" class="composer">
       <input
         id="question"
         placeholder="Escribe tu pregunta..."
         autocomplete="off"
-        onkeydown="handleKeyDown(event)"
       />
-      <button id="sendButton" onclick="ask()">Enviar</button>
-    </div>
+      <button id="sendButton" type="submit">Enviar</button>
+    </form>
   </div>
 
   <script>
@@ -880,13 +879,11 @@ question
       return row;
     }
 
-    function handleKeyDown(event) {
-      if (event.key === "Enter") {
-        ask();
+    async function ask(event) {
+      if (event) {
+        event.preventDefault();
       }
-    }
 
-    async function ask() {
       const questionInput = document.getElementById("question");
       const sendButton = document.getElementById("sendButton");
       const question = questionInput.value.trim();
@@ -955,6 +952,8 @@ question
         scrollToBottom();
       }
     }
+
+    document.getElementById("composer").addEventListener("submit", ask);
 
     scrollToBottom();
   </script>
