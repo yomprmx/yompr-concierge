@@ -5,6 +5,24 @@ import { enrichWithTransportInfo } from "./src/routing.js";
 import { searchPlacesRecommendations } from "./src/recommendations.js";
 import { saveChatLog } from "./src/logging.js";
 
+function normalizeWrappedUrls(text) {
+  if (!text) return text;
+
+  // Une URLs partidas por salto de línea en respuestas del modelo.
+  // Ejemplo:
+  // https://www.google.com/maps/dir/?
+  // api=1&origin=...
+  // =>
+  // https://www.google.com/maps/dir/?api=1&origin=...
+  return String(text).replace(
+    /(https?:\/\/[^\s<>\n]+)\n\s*([^\s<>]+)/g,
+    (full, first, next) => {
+      if (!/[/?#&=%]/.test(next)) return full;
+      return first + next;
+    }
+  );
+}
+
 const CHAT_CLIENT_JS = `
 (() => {
   const appRoot = document.getElementById("appRoot");
@@ -63,27 +81,7 @@ const CHAT_CLIENT_JS = `
       if (um.index > lastIdx) {
         appendStyledText(bubble, content.slice(lastIdx, um.index));
       }
-
-      var rawUrl = um[0];
-      var matchEnd = um.index + um[0].length;
-
-      // Une URLs largas que el modelo haya partido con saltos de línea.
-      // Ejemplo real: ".../dir/?\napi=1&origin=..."
-      while (true) {
-        var remaining = content.slice(matchEnd);
-        var continuation = remaining.match(/^\\s*\\n\\s*([^\\s<>]+)/);
-        if (!continuation) break;
-
-        var nextChunk = continuation[1];
-
-        // Solo unir si parece continuación real de URL (params/ruta codificada).
-        if (!/[/?#&=%]/.test(nextChunk)) break;
-
-        rawUrl += nextChunk;
-        matchEnd += continuation[0].length;
-      }
-
-      rawUrl = rawUrl.replace(trailRe, "").replace(/\\s+/g, "");
+      var rawUrl = um[0].replace(trailRe, "");
       var hrefUrl = rawUrl.indexOf("http") === 0 ? rawUrl : "https://" + rawUrl;
 
       var a = document.createElement("a");
@@ -95,8 +93,7 @@ const CHAT_CLIENT_JS = `
       a.style.cssText = "color:#3b82f6;text-decoration:underline;font-weight:500;";
       bubble.appendChild(a);
 
-      lastIdx = matchEnd;
-      urlRe.lastIndex = matchEnd;
+      lastIdx = um.index + um[0].length;
     }
 
     if (lastIdx < content.length) {
@@ -672,7 +669,8 @@ question
           }, { status: 500 });
         }
 
-        const answer = data.choices?.[0]?.message?.content || "No pude responder.";
+        const answerRaw = data.choices?.[0]?.message?.content || "No pude responder.";
+        const answer = normalizeWrappedUrls(answerRaw);
 
         const contextText = JSON.stringify(context);
         const approximateTokens = Math.ceil(contextText.length / 4);
