@@ -23,17 +23,399 @@ function normalizeWrappedUrls(text) {
   );
 }
 
+function parseConversationHistory(value) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(m => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+      .slice(-8);
+  } catch (_) {
+    return [];
+  }
+}
+
+function renderInitialMessages(messages) {
+  const safeMessages = Array.isArray(messages) ? messages : [];
+  return safeMessages.map(message => `
+      <div class="message-row ${message.role === "user" ? "user" : "assistant"}">
+        <div class="bubble">${escapeHtml(message.content || "")}</div>
+      </div>
+  `).join("");
+}
+
+async function processChatRequest(body, env) {
+  let tripId = body.tripId || "unknown";
+  let question = body.question || "";
+
+  try {
+    const {
+      timeZone,
+      localDate,
+      conversationHistory = []
+    } = body;
+
+    const tripText = await env.TRIPS.get(tripId);
+
+    if (!tripText) {
+      return { status: 404, payload: { answer: "No encontré el viaje." } };
+    }
+
+    const tripJson = JSON.parse(tripText);
+
+    let analysis = await classifyIntentWithDeepSeek(
+      question,
+      env,
+      tripJson,
+      conversationHistory
+    );
+
+    if (analysis.needs_clarification) {
+      const clarificationAnswer =
+        analysis.clarification_question ||
+        "¿Podrías darme un poco más de detalle para ayudarte mejor?";
+
+      await saveChatLog(env, {
+        trip_id: tripId,
+        question,
+        intent: "clarification",
+        scope: analysis.scope || "unknown",
+        city: analysis.city || null,
+        answer: clarificationAnswer,
+        analysis_thinking_enabled: true,
+        thinking_enabled: false,
+        session_history_messages: Array.isArray(conversationHistory) ? conversationHistory.length : 0,
+        route_direction: analysis.route_direction || null,
+        route_mode: analysis.route_mode || null,
+        place_name: analysis.place_name || null
+      });
+
+      return {
+        status: 200,
+        payload: {
+          answer: clarificationAnswer,
+          intent: "clarification"
+        }
+      };
+    }
+
+    const context = buildContextByIntent(tripJson, analysis, timeZone);
+    const intent = analysis.intent || "general";
+    const conflicts = detectBasicConflicts(tripJson);
+    context.detected_conflicts = conflicts;
+
+    let transportInfo = null;
+    let transportUsed = false;
+    let transportError = null;
+
+    try {
+      transportInfo = await enrichWithTransportInfo(tripJson, analysis, env);
+
+      if (transportInfo) {
+        context.transport_info = transportInfo;
+        transportUsed = transportInfo.type === "calculated_route";
+      }
+    } catch (e) {
+      transportUsed = false;
+      transportError = String(e);
+    }
+
+    let recommendationsInfo = null;
+    let recommendationsUsed = false;
+
+    if (intent === "recommendation" && analysis.recommendation_query) {
+      try {
+        recommendationsInfo = await searchPlacesRecommendations(analysis, tripJson, env);
+        if (recommendationsInfo?.places?.length) {
+          context.recommendations_results = recommendationsInfo.places;
+          recommendationsUsed = true;
+        }
+      } catch (e) {
+        recommendationsInfo = { places: [], error: String(e) };
+      }
+    }
+
+    const questionNorm = normalizeText(question);
+
+    const needsThinking =
+      intent === "recommendation" ||
+      analysis.scope === "trip_analysis" ||
+      questionNorm.includes("conflicto") ||
+      questionNorm.includes("pesado") ||
+      questionNorm.includes("conviene") ||
+      questionNorm.includes("mejor dia") ||
+      questionNorm.includes("mejor día") ||
+      questionNorm.includes("que dia") ||
+      questionNorm.includes("qué día") ||
+      questionNorm.includes("en que ciudad") ||
+      questionNorm.includes("en qué ciudad") ||
+      questionNorm.includes("salir") ||
+      questionNorm.includes("noche") ||
+      questionNorm.includes("bar") ||
+      questionNorm.includes("cena") ||
+      questionNorm.includes("cenar") ||
+      questionNorm.includes("tengo tiempo") ||
+      questionNorm.includes("me da tiempo") ||
+      questionNorm.includes("riesgo");
+
+    const cleanHistory = Array.isArray(conversationHistory)
+      ? conversationHistory
+          .filter(m =>
+            m &&
+            (m.role === "user" || m.role === "assistant") &&
+            typeof m.content === "string"
+          )
+          .slice(-8)
+      : [];
+
+    const response = await fetch("https://api.deepseek.com/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + env.DEEPSEEK_API_KEY,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "deepseek-v4-flash",
+        thinking: { type: needsThinking ? "enabled" : "disabled" },
+        temperature: 0.3,
+        max_tokens: needsThinking ? 3000 : 1200,
+        messages: [
+          {
+            role: "system",
+            content: `
+Eres Yompr Personal Concierge, un asistente de viaje premium. Responde en español amable, cálido, profesional, claro, natural y elegante, como el mejor asistente personal del mundo.
+
+Usa solo la información del viaje proporcionada y los datos calculados en transport_info. Si no sabes algo con certeza, dilo. No inventes datos.
+
+La respuesta debe ser concisa, lógica y responder lo que el cliente necesita sin hacerla innecesariamente extensa.
+No seas condescendiente, sé amable y directo.
+Las respuestas deben leerse naturales y como una conversación entre personas, no máquinas.
+Responde en texto plano. No uses Markdown, encabezados con ###, tablas ni asteriscos para negritas.
+
+Puedes usar el historial reciente de esta sesión para entender referencias como:
+- "¿y en taxi?"
+- "¿y desde ahí?"
+- "¿cuánto tarda?"
+- "¿y después?"
+- "¿qué me recomiendas?"
+
+Fechas:
+- No uses createdAt, modifiedAt ni exportedAt como fechas del viaje; son fechas administrativas.
+- Para determinar inicio, fin o días del viaje, usa vuelos, check-in/check-out, actividades y servicios.
+
+Antes del viaje:
+- Si el viaje aún no ha comenzado, explica que todavía no inicia.
+- Menciona cuándo inicia y cuál es el primer evento relevante.
+- Ofrece ayuda útil: documentos, equipaje, recomendaciones o preparación.
+
+Riesgos:
+- Si el contexto incluye detected_conflicts, menciona solo los relevantes para la pregunta del cliente.
+- Prioriza como riesgos reales: vuelos, traslados, trenes, actividades y tiempos insuficientes entre ellos.
+- Si hay insufficient_buffer antes de un vuelo, trátalo como riesgo importante.
+- El check-in y check-out del hotel son ventanas o límites administrativos, no eventos fijos.
+- No trates un vuelo antes del check-out estándar como conflicto crítico. Solo recomienda check-out anticipado y preparar equipaje con tiempo.
+- No recomiendes late check-out para resolver salidas tempranas.
+
+Recomendaciones de días / planes:
+- Cuando el usuario pida "mejor día", "qué día conviene", "en qué ciudad", "salir de noche", "cenar", "tomar algo" o planes que impliquen cansancio, evalúa SIEMPRE el día siguiente.
+- Penaliza fuertemente cualquier noche previa a vuelo temprano, traslado temprano, cambio de ciudad, check-out temprano, tour o actividad importante por la mañana.
+- No recomiendes como mejor opción una noche si al día siguiente hay que madrugar, aunque esa ciudad sea atractiva.
+- Compara explícitamente 2 o 3 opciones y elige la que tenga menor impacto logístico.
+- Si una opción es atractiva pero logísticamente mala, dilo claramente.
+- La mejor recomendación debe balancear experiencia, descanso y riesgo operativo del día siguiente.
+- Si recomiendas entre varios días, baja prioridad a noches antes de vuelos o traslados tempranos, prefiere noches donde el día siguiente sea libre, ligero o sin cambio de ciudad.
+
+Estilo:
+- No seas redundante.
+- No uses lenguaje técnico.
+- Si haces una lista, termínala completa y cierra con una conclusión breve.
+- Si detectas emergencia o problema serio, recomienda contactar a Rigo.
+- Formato obligatorio: usa párrafos cortos, con una línea en blanco entre bloques.
+- Cuando des 2 o más opciones (rutas o recomendaciones), enuméralas como "1.", "2.", "3.".
+- Cada opción debe ir en su propio bloque; no mezcles dos opciones en el mismo párrafo.
+- Después de una URL, inicia una nueva línea o un nuevo párrafo; nunca pegues texto seguido en la misma línea.
+
+URLs y enlaces (REGLA ABSOLUTA):
+- Cuando incluyas cualquier URL (Google Maps, links de lugares, maps_link, googleMapsUri, etc.), escríbela SIEMPRE COMPLETA, EXACTAMENTE como aparece en los datos, empezando por "https://".
+- PROHIBIDO abreviar URLs, quitar el "https://", quitar "www.", o reemplazar parte de la URL con texto descriptivo.
+- PROHIBIDO escribir "maps.google.com/..." sin el "https://" delante. Siempre debe ser "https://maps.google.com/..." o "https://www.google.com/maps/..." según venga en los datos.
+- PROHIBIDO escribir placeholders como "[link]", "[enlace]", "(ver enlace)", "(enlace aquí)" — copia la URL real del campo.
+- Antes de cada URL, deja un espacio para que sea clickeable. Ejemplo correcto: "Aquí está el enlace: https://maps.google.com/?cid=12345"
+
+Recomendaciones:
+- Si context.recommendations_results existe y tiene elementos, úsalo como tu ÚNICA fuente para recomendar lugares. Prohibido inventar o añadir lugares que no estén en esa lista.
+- Elige 2 o 3 opciones de la lista. Prioriza las que tengan mejor rating y más reseñas. Si el usuario pidió precio bajo, filtra por price_level económico primero.
+- Para cada lugar recomendado incluye: nombre, descripción breve (usa el campo description si existe, si no describe el tipo brevemente), rating (ej: 4.5 ⭐ con X reseñas), precio si está disponible, horario relevante si aplica, y el maps_link como enlace clickeable.
+- Si opening_hours está disponible y la pregunta es para esta noche o hoy, menciona si está abierto.
+- No menciones todos los campos de cada lugar; sé selectivo y natural.
+- Si recommendations_results está vacío o no existe pero el intent es recommendation, di que no encontraste lugares con datos concretos en la zona y recomienda buscar en Google Maps con el tipo de lugar + barrio del hotel.
+- NUNCA inventes nombres de restaurantes, bares, museos u otros lugares que no estén en context.recommendations_results.
+
+Rutas:
+- Si transport_info.type = “calculated_route”, usa transport_info como fuente ÚNICA para distancias y tiempos. Prohibido usar conocimiento propio sobre distancias, tiempos o rutas.
+- Si transport_info.options existe, compara las opciones disponibles: caminando, taxi/coche y transporte público.
+- Para caminatas: usa ÚNICAMENTE transport_info.options.walking.duration_min y distance_km. Si walking es null, no menciones caminado como opción.
+- Para taxi/coche: usa ÚNICAMENTE transport_info.options.driving.duration_min y distance_km. Si driving es null, no menciones esta opción.
+- Para transporte público: usa ÚNICAMENTE transport_info.options.transit.duration_min y distance_km.
+  - Si transit.duration_min tiene un valor numérico, úsalo tal cual. No lo cuestiones ni lo ajustes.
+  - Si transit.steps existe, úsalo para explicar la ruta paso a paso: qué línea tomar, desde qué parada, cuántas paradas, dónde transbordar. Esto es lo más valioso que puedes dar al cliente.
+  - Si transit.duration_min es null, escribe: "Para el transporte público no tengo el tiempo calculado en este momento; puedes ver las opciones exactas aquí: " seguido del valor exacto y completo del campo transport_info.options.transit.maps_link (la URL completa empezando por https://). NO escribas el texto literal "[transit.maps_link]" ni "(enlace de transporte público)" ni nada similar — copia el contenido del campo. NUNCA estimes ni supongas un tiempo de tránsito.
+- REGLA ABSOLUTA: Cualquier tiempo o distancia que menciones debe estar en transport_info. Si no está ahí, no lo digas.
+- No inventes tiempos de ruta bajo ninguna circunstancia, aunque creas conocer la ciudad.
+- Si el usuario pregunta “está cerca”, responde con distancia y duración caminando cuando estén disponibles.
+- Si transport_info.type = “route_without_destination”, NO des tiempos ni alternativas. Explica que falta el destino exacto y pide el aeropuerto, estación o punto al que quiere ir.
+- Si transport_info.type = “geocoding_failed”, no inventes distancia ni duración. Ofrece el enlace de Google Maps y pide una dirección más precisa.
+- Si transport_info.type = “route_calculation_failed”, di que no se pudo calcular la ruta y ofrece el enlace de Google Maps.
+- Si el análisis estructurado incluye origin_query y destination_query, respétalos como la interpretación principal de la ruta.
+- No cambies la ciudad o el hotel de origen si origin_query ya fue resuelto por el clasificador.
+- Si el usuario habla de “ir a”, “salir hacia”, “cuando vaya a” otra ciudad, revisa el JSON completo para ubicar la etapa previa del viaje.
+- Antes de responder rutas entre ciudades o cambios de destino, verifica la secuencia real del viaje en el JSON completo.
+
+ROL Y LÍMITES — LEE ESTO ANTES DE RESPONDER:
+Eres un asistente EXCLUSIVAMENTE informativo. Tu único rol es consultar el itinerario, responder preguntas y orientar al cliente.
+NUNCA puedes realizar ninguna acción transaccional. Esto incluye, sin excepción:
+- Reservar, contratar, gestionar, modificar o cancelar cualquier servicio (vuelos, hoteles, traslados, tours, restaurantes u otros).
+- Generar, enviar o mencionar links de pago, cobros, facturas, transferencias o cualquier forma de transacción económica.
+- Confirmar disponibilidad en tiempo real ni hacer cotizaciones de precios actuales.
+- Coordinar proveedores, contactar terceros o actuar en nombre del cliente.
+Si el cliente pide cualquiera de estas cosas, responde siempre de forma cálida pero clara: “Eso lo gestiona directamente tu agente de Yompr. Para reservas, cambios o pagos, ponte en contacto con Rigo y con gusto lo coordinarán contigo.”
+PROHIBIDO usar frases como: “puedo ayudarte a reservar”, “te genero el link de pago”, “podemos gestionar eso”, “te coordino la reserva”, “puedo hacer ese cambio por ti” o cualquier variante que sugiera capacidad de acción transaccional.
+No ofrezcas capacidades que no tienes, ni insinúes que podrías hacerlo más adelante. Redirige siempre al agente.
+`
+          },
+          ...cleanHistory,
+          {
+            role: "user",
+            content:
+              "Análisis estructurado:\n" +
+              JSON.stringify(analysis) +
+              "\n\nZona horaria del cliente: " + (timeZone || "desconocida") +
+              "\nFecha local del cliente: " + (localDate || "desconocida") +
+              "\\n\\nContexto filtrado del viaje:\\n" +
+              JSON.stringify(context) +
+              "\\n\\nJSON completo del viaje para verificar secuencia, fechas y traslados:\\n" +
+              JSON.stringify(tripJson) +
+              "\\n\\nPregunta actual del cliente:\\n" +
+              question
+          }
+        ]
+      })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return {
+        status: 500,
+        payload: {
+          answer: "Error de DeepSeek: " + JSON.stringify(data)
+        }
+      };
+    }
+
+    const answerRaw = data.choices?.[0]?.message?.content || "No pude responder.";
+    const answer = normalizeWrappedUrls(answerRaw);
+
+    const contextText = JSON.stringify(context);
+    const approximateTokens = Math.ceil(contextText.length / 4);
+
+    await saveChatLog(env, {
+      trip_id: tripId,
+      question,
+      intent,
+      scope: analysis.scope || "all",
+      city: analysis.city || null,
+      answer,
+      context_characters: contextText.length,
+      approximate_context_tokens: approximateTokens,
+      analysis_thinking_enabled: true,
+      thinking_enabled: needsThinking,
+      session_history_messages: cleanHistory.length,
+      transport_used: transportUsed,
+      transport_type: transportInfo?.type || null,
+      transport_duration_min: transportInfo?.duration_min || null,
+      transport_distance_km: transportInfo?.distance_km || null,
+      transport_origin: transportInfo?.origin || null,
+      transport_destination: transportInfo?.destination || null,
+      transport_error: transportError || transportInfo?.geocode_error || transportInfo?.route_error || null,
+      walking_duration_min: transportInfo?.options?.walking?.duration_min ?? null,
+      walking_distance_km: transportInfo?.options?.walking?.distance_km ?? null,
+      driving_duration_min: transportInfo?.options?.driving?.duration_min ?? null,
+      driving_distance_km: transportInfo?.options?.driving?.distance_km ?? null,
+      transit_duration_min: transportInfo?.options?.transit?.duration_min ?? null,
+      transit_distance_km: transportInfo?.options?.transit?.distance_km ?? null,
+      route_direction: analysis.route_direction || null,
+      route_mode: analysis.route_mode || null,
+      place_name: analysis.place_name || null,
+      geocode_origin: transportInfo?.geocode_origin_display_name || null,
+      geocode_destination: transportInfo?.geocode_destination_display_name || null,
+      geocode_origin_lat: transportInfo?.geocode_origin_lat || null,
+      geocode_origin_lon: transportInfo?.geocode_origin_lon || null,
+      geocode_destination_lat: transportInfo?.geocode_destination_lat || null,
+      geocode_destination_lon: transportInfo?.geocode_destination_lon || null,
+      geocode_origin_attempted_query: transportInfo?.geocode_origin_attempted_query || null,
+      geocode_destination_attempted_query: transportInfo?.geocode_destination_attempted_query || null,
+      geocode_origin_error: transportInfo?.geocode_origin_error || null,
+      geocode_destination_error: transportInfo?.geocode_destination_error || null,
+      recommendations_used: recommendationsUsed,
+      recommendations_query: analysis.recommendation_query || null,
+      recommendations_count: recommendationsInfo?.places?.length ?? null,
+      recommendations_bias_used: recommendationsInfo?.bias_used || false,
+      recommendations_error: recommendationsInfo?.error || null,
+      used_transport_in_answer:
+        answer.includes("estimado") ||
+        answer.includes("Google Maps") ||
+        answer.includes("caminando") ||
+        answer.includes("taxi") ||
+        answer.includes("transporte público")
+    });
+
+    return { status: 200, payload: { answer, intent } };
+  } catch (e) {
+    const errorAnswer = "Error al procesar la pregunta: " + String(e);
+
+    await saveChatLog(env, {
+      trip_id: tripId,
+      question,
+      intent: "error",
+      scope: "unknown",
+      city: null,
+      answer: errorAnswer,
+      error_stage: "api_chat_catch",
+      raw_error: String(e)
+    });
+
+    return {
+      status: 500,
+      payload: {
+        answer: errorAnswer
+      }
+    };
+  }
+}
+
 const CHAT_CLIENT_JS = `
 (() => {
   const appRoot = document.getElementById("appRoot");
   const tripId = appRoot && appRoot.dataset ? appRoot.dataset.tripId || "" : "";
+  const composer = document.getElementById("composer");
   const questionInput = document.getElementById("question");
   const sendButton = document.getElementById("sendButton");
   const messages = document.getElementById("messages");
+  const historyField = document.getElementById("historyField");
+  const timeZoneField = document.getElementById("timeZoneField");
+  const localDateField = document.getElementById("localDateField");
 
-  if (!tripId || !questionInput || !sendButton || !messages) return;
+  if (!tripId || !composer || !questionInput || !sendButton || !messages) return;
 
   let conversationHistory = [];
+  try {
+    conversationHistory = historyField && historyField.value ? JSON.parse(historyField.value) : [];
+    if (!Array.isArray(conversationHistory)) conversationHistory = [];
+  } catch (_) {
+    conversationHistory = [];
+  }
   let isSending = false;
 
   function scrollToBottom() {
@@ -129,6 +511,8 @@ const CHAT_CLIENT_JS = `
 
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const localDate = new Date().toLocaleDateString("en-CA", { timeZone: timeZone });
+    if (timeZoneField) timeZoneField.value = timeZone;
+    if (localDateField) localDateField.value = localDate;
 
     try {
       const res = await fetch("/api/chat", {
@@ -157,6 +541,7 @@ const CHAT_CLIENT_JS = `
       conversationHistory.push({ role: "user", content: question });
       conversationHistory.push({ role: "assistant", content: answer });
       conversationHistory = conversationHistory.slice(-8);
+      if (historyField) historyField.value = JSON.stringify(conversationHistory);
     } catch (error) {
       thinkingRow.remove();
       addMessage("assistant", "Error de conexión: " + error.message);
@@ -169,6 +554,7 @@ const CHAT_CLIENT_JS = `
     }
   }
 
+  composer.addEventListener("submit", ask);
   sendButton.addEventListener("click", ask);
   questionInput.addEventListener("keydown", function(event) {
     if (event.key === "Enter") ask(event);
@@ -409,353 +795,8 @@ export default {
     }
 
     if (url.pathname === "/api/chat" && request.method === "POST") {
-  let tripId = "unknown";
-  let question = "";
-
-  try {
-    const body = await request.json();
-
-    tripId = body.tripId || "unknown";
-    question = body.question || "";
-
-    const {
-      timeZone,
-      localDate,
-      conversationHistory = []
-    } = body;
-
-        const tripText = await env.TRIPS.get(tripId);
-
-        if (!tripText) {
-          return Response.json({ answer: "No encontré el viaje." }, { status: 404 });
-        }
-
-        const tripJson = JSON.parse(tripText);
-
-let analysis = await classifyIntentWithDeepSeek(
-  question,
-  env,
-  tripJson,
-  conversationHistory
-);
-        if (analysis.needs_clarification) {
-  const clarificationAnswer =
-    analysis.clarification_question ||
-    "¿Podrías darme un poco más de detalle para ayudarte mejor?";
-
-  await saveChatLog(env, {
-    trip_id: tripId,
-    question,
-    intent: "clarification",
-    scope: analysis.scope || "unknown",
-    city: analysis.city || null,
-    answer: clarificationAnswer,
-    analysis_thinking_enabled: true,
-    thinking_enabled: false,
-    session_history_messages: Array.isArray(conversationHistory) ? conversationHistory.length : 0,
-    route_direction: analysis.route_direction || null,
-    route_mode: analysis.route_mode || null,
-    place_name: analysis.place_name || null
-  });
-
-  return Response.json({
-    answer: clarificationAnswer,
-    intent: "clarification"
-  });
-}
-
-        const context = buildContextByIntent(tripJson, analysis, timeZone);
-        const intent = analysis.intent || "general";
-        const conflicts = detectBasicConflicts(tripJson);
-        context.detected_conflicts = conflicts;
-
-        let transportInfo = null;
-        let transportUsed = false;
-        let transportError = null;
-
-        try {
-          transportInfo = await enrichWithTransportInfo(tripJson, analysis, env);
-
-          if (transportInfo) {
-            context.transport_info = transportInfo;
-            transportUsed = transportInfo.type === "calculated_route";
-          }
-        } catch (e) {
-          transportUsed = false;
-          transportError = String(e);
-        }
-
-        let recommendationsInfo = null;
-        let recommendationsUsed = false;
-
-        if (intent === "recommendation" && analysis.recommendation_query) {
-          try {
-            recommendationsInfo = await searchPlacesRecommendations(analysis, tripJson, env);
-            if (recommendationsInfo?.places?.length) {
-              context.recommendations_results = recommendationsInfo.places;
-              recommendationsUsed = true;
-            }
-          } catch (e) {
-            recommendationsInfo = { places: [], error: String(e) };
-          }
-        }
-
-        const questionNorm = normalizeText(question);
-
-        const needsThinking =
-  intent === "recommendation" ||
-  analysis.scope === "trip_analysis" ||
-  questionNorm.includes("conflicto") ||
-  questionNorm.includes("pesado") ||
-  questionNorm.includes("conviene") ||
-  questionNorm.includes("mejor dia") ||
-  questionNorm.includes("mejor día") ||
-  questionNorm.includes("que dia") ||
-  questionNorm.includes("qué día") ||
-  questionNorm.includes("en que ciudad") ||
-  questionNorm.includes("en qué ciudad") ||
-  questionNorm.includes("salir") ||
-  questionNorm.includes("noche") ||
-  questionNorm.includes("bar") ||
-  questionNorm.includes("cena") ||
-  questionNorm.includes("cenar") ||
-  questionNorm.includes("tengo tiempo") ||
-  questionNorm.includes("me da tiempo") ||
-  questionNorm.includes("riesgo");
-
-        const cleanHistory = Array.isArray(conversationHistory)
-          ? conversationHistory
-              .filter(m =>
-                m &&
-                (m.role === "user" || m.role === "assistant") &&
-                typeof m.content === "string"
-              )
-              .slice(-8)
-          : [];
-
-        const response = await fetch("https://api.deepseek.com/chat/completions", {
-          method: "POST",
-          headers: {
-            "Authorization": "Bearer " + env.DEEPSEEK_API_KEY,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            model: "deepseek-v4-flash",
-            thinking: { type: needsThinking ? "enabled" : "disabled" },
-            temperature: 0.3,
-            max_tokens: needsThinking ? 3000 : 1200,
-            messages: [
-              {
-                role: "system",
-                content: `
-Eres Yompr Personal Concierge, un asistente de viaje premium. Responde en español amable, cálido, profesional, claro, natural y elegante, como el mejor asistente personal del mundo.
-
-Usa solo la información del viaje proporcionada y los datos calculados en transport_info. Si no sabes algo con certeza, dilo. No inventes datos.
-
-La respuesta debe ser concisa, lógica y responder lo que el cliente necesita sin hacerla innecesariamente extensa.
-No seas condescendiente, sé amable y directo.
-Las respuestas deben leerse naturales y como una conversación entre personas, no máquinas.
-Responde en texto plano. No uses Markdown, encabezados con ###, tablas ni asteriscos para negritas.
-
-Puedes usar el historial reciente de esta sesión para entender referencias como:
-- "¿y en taxi?"
-- "¿y desde ahí?"
-- "¿cuánto tarda?"
-- "¿y después?"
-- "¿qué me recomiendas?"
-
-Fechas:
-- No uses createdAt, modifiedAt ni exportedAt como fechas del viaje; son fechas administrativas.
-- Para determinar inicio, fin o días del viaje, usa vuelos, check-in/check-out, actividades y servicios.
-
-Antes del viaje:
-- Si el viaje aún no ha comenzado, explica que todavía no inicia.
-- Menciona cuándo inicia y cuál es el primer evento relevante.
-- Ofrece ayuda útil: documentos, equipaje, recomendaciones o preparación.
-
-Riesgos:
-- Si el contexto incluye detected_conflicts, menciona solo los relevantes para la pregunta del cliente.
-- Prioriza como riesgos reales: vuelos, traslados, trenes, actividades y tiempos insuficientes entre ellos.
-- Si hay insufficient_buffer antes de un vuelo, trátalo como riesgo importante.
-- El check-in y check-out del hotel son ventanas o límites administrativos, no eventos fijos.
-- No trates un vuelo antes del check-out estándar como conflicto crítico. Solo recomienda check-out anticipado y preparar equipaje con tiempo.
-- No recomiendes late check-out para resolver salidas tempranas.
-
-Recomendaciones de días / planes:
-- Cuando el usuario pida "mejor día", "qué día conviene", "en qué ciudad", "salir de noche", "cenar", "tomar algo" o planes que impliquen cansancio, evalúa SIEMPRE el día siguiente.
-- Penaliza fuertemente cualquier noche previa a vuelo temprano, traslado temprano, cambio de ciudad, check-out temprano, tour o actividad importante por la mañana.
-- No recomiendes como mejor opción una noche si al día siguiente hay que madrugar, aunque esa ciudad sea atractiva.
-- Compara explícitamente 2 o 3 opciones y elige la que tenga menor impacto logístico.
-- Si una opción es atractiva pero logísticamente mala, dilo claramente.
-- La mejor recomendación debe balancear experiencia, descanso y riesgo operativo del día siguiente.
-- Si recomiendas entre varios días, baja prioridad a noches antes de vuelos o traslados tempranos, prefiere noches donde el día siguiente sea libre, ligero o sin cambio de ciudad.
-
-Estilo:
-- No seas redundante.
-- No uses lenguaje técnico.
-- Si haces una lista, termínala completa y cierra con una conclusión breve.
-- Si detectas emergencia o problema serio, recomienda contactar a Rigo.
-- Formato obligatorio: usa párrafos cortos, con una línea en blanco entre bloques.
-- Cuando des 2 o más opciones (rutas o recomendaciones), enuméralas como "1.", "2.", "3.".
-- Cada opción debe ir en su propio bloque; no mezcles dos opciones en el mismo párrafo.
-- Después de una URL, inicia una nueva línea o un nuevo párrafo; nunca pegues texto seguido en la misma línea.
-
-URLs y enlaces (REGLA ABSOLUTA):
-- Cuando incluyas cualquier URL (Google Maps, links de lugares, maps_link, googleMapsUri, etc.), escríbela SIEMPRE COMPLETA, EXACTAMENTE como aparece en los datos, empezando por "https://".
-- PROHIBIDO abreviar URLs, quitar el "https://", quitar "www.", o reemplazar parte de la URL con texto descriptivo.
-- PROHIBIDO escribir "maps.google.com/..." sin el "https://" delante. Siempre debe ser "https://maps.google.com/..." o "https://www.google.com/maps/..." según venga en los datos.
-- PROHIBIDO escribir placeholders como "[link]", "[enlace]", "(ver enlace)", "(enlace aquí)" — copia la URL real del campo.
-- Antes de cada URL, deja un espacio para que sea clickeable. Ejemplo correcto: "Aquí está el enlace: https://maps.google.com/?cid=12345"
-
-Recomendaciones:
-- Si context.recommendations_results existe y tiene elementos, úsalo como tu ÚNICA fuente para recomendar lugares. Prohibido inventar o añadir lugares que no estén en esa lista.
-- Elige 2 o 3 opciones de la lista. Prioriza las que tengan mejor rating y más reseñas. Si el usuario pidió precio bajo, filtra por price_level económico primero.
-- Para cada lugar recomendado incluye: nombre, descripción breve (usa el campo description si existe, si no describe el tipo brevemente), rating (ej: 4.5 ⭐ con X reseñas), precio si está disponible, horario relevante si aplica, y el maps_link como enlace clickeable.
-- Si opening_hours está disponible y la pregunta es para esta noche o hoy, menciona si está abierto.
-- No menciones todos los campos de cada lugar; sé selectivo y natural.
-- Si recommendations_results está vacío o no existe pero el intent es recommendation, di que no encontraste lugares con datos concretos en la zona y recomienda buscar en Google Maps con el tipo de lugar + barrio del hotel.
-- NUNCA inventes nombres de restaurantes, bares, museos u otros lugares que no estén en context.recommendations_results.
-
-Rutas:
-- Si transport_info.type = “calculated_route”, usa transport_info como fuente ÚNICA para distancias y tiempos. Prohibido usar conocimiento propio sobre distancias, tiempos o rutas.
-- Si transport_info.options existe, compara las opciones disponibles: caminando, taxi/coche y transporte público.
-- Para caminatas: usa ÚNICAMENTE transport_info.options.walking.duration_min y distance_km. Si walking es null, no menciones caminado como opción.
-- Para taxi/coche: usa ÚNICAMENTE transport_info.options.driving.duration_min y distance_km. Si driving es null, no menciones esta opción.
-- Para transporte público: usa ÚNICAMENTE transport_info.options.transit.duration_min y distance_km.
-  - Si transit.duration_min tiene un valor numérico, úsalo tal cual. No lo cuestiones ni lo ajustes.
-  - Si transit.steps existe, úsalo para explicar la ruta paso a paso: qué línea tomar, desde qué parada, cuántas paradas, dónde transbordar. Esto es lo más valioso que puedes dar al cliente.
-  - Si transit.duration_min es null, escribe: "Para el transporte público no tengo el tiempo calculado en este momento; puedes ver las opciones exactas aquí: " seguido del valor exacto y completo del campo transport_info.options.transit.maps_link (la URL completa empezando por https://). NO escribas el texto literal "[transit.maps_link]" ni "(enlace de transporte público)" ni nada similar — copia el contenido del campo. NUNCA estimes ni supongas un tiempo de tránsito.
-- REGLA ABSOLUTA: Cualquier tiempo o distancia que menciones debe estar en transport_info. Si no está ahí, no lo digas.
-- No inventes tiempos de ruta bajo ninguna circunstancia, aunque creas conocer la ciudad.
-- Si el usuario pregunta “está cerca”, responde con distancia y duración caminando cuando estén disponibles.
-- Si transport_info.type = “route_without_destination”, NO des tiempos ni alternativas. Explica que falta el destino exacto y pide el aeropuerto, estación o punto al que quiere ir.
-- Si transport_info.type = “geocoding_failed”, no inventes distancia ni duración. Ofrece el enlace de Google Maps y pide una dirección más precisa.
-- Si transport_info.type = “route_calculation_failed”, di que no se pudo calcular la ruta y ofrece el enlace de Google Maps.
-- Si el análisis estructurado incluye origin_query y destination_query, respétalos como la interpretación principal de la ruta.
-- No cambies la ciudad o el hotel de origen si origin_query ya fue resuelto por el clasificador.
-- Si el usuario habla de “ir a”, “salir hacia”, “cuando vaya a” otra ciudad, revisa el JSON completo para ubicar la etapa previa del viaje.
-- Antes de responder rutas entre ciudades o cambios de destino, verifica la secuencia real del viaje en el JSON completo.
-
-ROL Y LÍMITES — LEE ESTO ANTES DE RESPONDER:
-Eres un asistente EXCLUSIVAMENTE informativo. Tu único rol es consultar el itinerario, responder preguntas y orientar al cliente.
-NUNCA puedes realizar ninguna acción transaccional. Esto incluye, sin excepción:
-- Reservar, contratar, gestionar, modificar o cancelar cualquier servicio (vuelos, hoteles, traslados, tours, restaurantes u otros).
-- Generar, enviar o mencionar links de pago, cobros, facturas, transferencias o cualquier forma de transacción económica.
-- Confirmar disponibilidad en tiempo real ni hacer cotizaciones de precios actuales.
-- Coordinar proveedores, contactar terceros o actuar en nombre del cliente.
-Si el cliente pide cualquiera de estas cosas, responde siempre de forma cálida pero clara: “Eso lo gestiona directamente tu agente de Yompr. Para reservas, cambios o pagos, ponte en contacto con Rigo y con gusto lo coordinarán contigo.”
-PROHIBIDO usar frases como: “puedo ayudarte a reservar”, “te genero el link de pago”, “podemos gestionar eso”, “te coordino la reserva”, “puedo hacer ese cambio por ti” o cualquier variante que sugiera capacidad de acción transaccional.
-No ofrezcas capacidades que no tienes, ni insinúes que podrías hacerlo más adelante. Redirige siempre al agente.
-`
-              },
-              ...cleanHistory,
-              {
-                role: "user",
-                content:
-                  "Análisis estructurado:\n" +
-                  JSON.stringify(analysis) +
-                  "\n\nZona horaria del cliente: " + (timeZone || "desconocida") +
-                  "\nFecha local del cliente: " + (localDate || "desconocida") +
-                 "\\n\\nContexto filtrado del viaje:\\n" +
-JSON.stringify(context) +
-"\\n\\nJSON completo del viaje para verificar secuencia, fechas y traslados:\\n" +
-JSON.stringify(tripJson) +
-"\\n\\nPregunta actual del cliente:\\n" +
-question
-              }
-            ]
-          })
-        });
-
-        const data = await response.json();
-
-        if (!response.ok) {
-          return Response.json({
-            answer: "Error de DeepSeek: " + JSON.stringify(data)
-          }, { status: 500 });
-        }
-
-        const answerRaw = data.choices?.[0]?.message?.content || "No pude responder.";
-        const answer = normalizeWrappedUrls(answerRaw);
-
-        const contextText = JSON.stringify(context);
-        const approximateTokens = Math.ceil(contextText.length / 4);
-
-      await saveChatLog(env, {
-  trip_id: tripId,
-  question,
-  intent,
-  scope: analysis.scope || "all",
-  city: analysis.city || null,
-  answer,
-  context_characters: contextText.length,
-  approximate_context_tokens: approximateTokens,
-  analysis_thinking_enabled: true,
-  thinking_enabled: needsThinking,
-  session_history_messages: cleanHistory.length,
-
-  transport_used: transportUsed,
-  transport_type: transportInfo?.type || null,
-  transport_duration_min: transportInfo?.duration_min || null,
-  transport_distance_km: transportInfo?.distance_km || null,
-  transport_origin: transportInfo?.origin || null,
-  transport_destination: transportInfo?.destination || null,
-  transport_error: transportError || transportInfo?.geocode_error || transportInfo?.route_error || null,
-
-  walking_duration_min: transportInfo?.options?.walking?.duration_min ?? null,
-  walking_distance_km: transportInfo?.options?.walking?.distance_km ?? null,
-  driving_duration_min: transportInfo?.options?.driving?.duration_min ?? null,
-  driving_distance_km: transportInfo?.options?.driving?.distance_km ?? null,
-  transit_duration_min: transportInfo?.options?.transit?.duration_min ?? null,
-  transit_distance_km: transportInfo?.options?.transit?.distance_km ?? null,
-
-  route_direction: analysis.route_direction || null,
-  route_mode: analysis.route_mode || null,
-  place_name: analysis.place_name || null,
-  geocode_origin: transportInfo?.geocode_origin_display_name || null,
-  geocode_destination: transportInfo?.geocode_destination_display_name || null,
-  geocode_origin_lat: transportInfo?.geocode_origin_lat || null,
-  geocode_origin_lon: transportInfo?.geocode_origin_lon || null,
-  geocode_destination_lat: transportInfo?.geocode_destination_lat || null,
-  geocode_destination_lon: transportInfo?.geocode_destination_lon || null,
-  geocode_origin_attempted_query: transportInfo?.geocode_origin_attempted_query || null,
-  geocode_destination_attempted_query: transportInfo?.geocode_destination_attempted_query || null,
-  geocode_origin_error: transportInfo?.geocode_origin_error || null,
-  geocode_destination_error: transportInfo?.geocode_destination_error || null,
-
-  recommendations_used: recommendationsUsed,
-  recommendations_query: analysis.recommendation_query || null,
-  recommendations_count: recommendationsInfo?.places?.length ?? null,
-  recommendations_bias_used: recommendationsInfo?.bias_used || false,
-  recommendations_error: recommendationsInfo?.error || null,
-
-  used_transport_in_answer:
-    answer.includes("estimado") ||
-    answer.includes("Google Maps") ||
-    answer.includes("caminando") ||
-    answer.includes("taxi") ||
-    answer.includes("transporte público")
-});
-
-        return Response.json({ answer, intent });
-           } catch (e) {
-        const errorAnswer = "Error al procesar la pregunta: " + String(e);
-
-        await saveChatLog(env, {
-          trip_id: tripId,
-          question,
-          intent: "error",
-          scope: "unknown",
-          city: null,
-          answer: errorAnswer,
-          error_stage: "api_chat_catch",
-          raw_error: String(e)
-        });
-
-        return Response.json({
-          answer: errorAnswer
-        }, { status: 500 });
-      }
+      const result = await processChatRequest(await request.json(), env);
+      return Response.json(result.payload, { status: result.status });
     }
 
     if (url.pathname.startsWith("/v/")) {
@@ -776,6 +817,35 @@ question
       const destinationText = trip.destination
         ? "Destino: " + escapeHtml(trip.destination)
         : "Tu concierge personal de viaje";
+      let initialMessages = [
+        {
+          role: "assistant",
+          content: "Hola, soy tu concierge personal de Yompr. Puedes preguntarme sobre vuelos, hospedaje, actividades, traslados o recomendaciones de tu viaje."
+        }
+      ];
+
+      if (request.method === "POST") {
+        const formData = await request.formData();
+        const question = String(formData.get("question") || "").trim();
+        const history = parseConversationHistory(formData.get("history"));
+
+        if (question) {
+          const result = await processChatRequest({
+            tripId,
+            question,
+            timeZone: String(formData.get("timeZone") || ""),
+            localDate: String(formData.get("localDate") || ""),
+            conversationHistory: history
+          }, env);
+
+          initialMessages = history
+            .concat([{ role: "user", content: question }])
+            .concat([{ role: "assistant", content: result.payload.answer || "No pude responder." }])
+            .slice(-9);
+        } else if (history.length) {
+          initialMessages = history.slice(-9);
+        }
+      }
 
       return new Response(`
 <!DOCTYPE html>
@@ -966,19 +1036,21 @@ question
     </div>
 
     <div id="messages" class="messages">
-      <div class="message-row assistant">
-        <div class="bubble">Hola, soy tu concierge personal de Yompr. Puedes preguntarme sobre vuelos, hospedaje, actividades, traslados o recomendaciones de tu viaje.</div>
-      </div>
+${renderInitialMessages(initialMessages)}
     </div>
 
-    <div id="composer" class="composer">
+    <form id="composer" class="composer" method="POST">
       <input
         id="question"
+        name="question"
         placeholder="Escribe tu pregunta..."
         autocomplete="off"
       />
-      <button id="sendButton" type="button">Enviar</button>
-    </div>
+      <input id="historyField" name="history" type="hidden" value="${escapeHtml(JSON.stringify(initialMessages.slice(-8)))}" />
+      <input id="timeZoneField" name="timeZone" type="hidden" value="" />
+      <input id="localDateField" name="localDate" type="hidden" value="" />
+      <button id="sendButton" type="submit">Enviar</button>
+    </form>
   </div>
   <script src="/chat-client-v6.js" defer></script>
 </body>
