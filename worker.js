@@ -782,18 +782,19 @@ question
       </div>
     </div>
 
-    <form id="composer" class="composer" onsubmit="ask(event); return false;">
+    <form id="composer" class="composer" onsubmit="return false;">
       <input
         id="question"
         placeholder="Escribe tu pregunta..."
         autocomplete="off"
       />
-      <button id="sendButton" type="submit" onclick="ask(event)">Enviar</button>
+      <button id="sendButton" type="button">Enviar</button>
     </form>
   </div>
 
   <script>
     let conversationHistory = [];
+    let isSending = false;
 
     function scrollToBottom() {
       const messages = document.getElementById("messages");
@@ -880,16 +881,17 @@ question
     }
 
     async function ask(event) {
-      if (event) {
-        event.preventDefault();
-      }
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      if (event && typeof event.stopPropagation === "function") event.stopPropagation();
 
       const questionInput = document.getElementById("question");
       const sendButton = document.getElementById("sendButton");
       const question = questionInput.value.trim();
 
-      if (sendButton.disabled) return;
+      if (isSending || sendButton.disabled) return;
       if (!question) return;
+
+      isSending = true;
 
       addMessage("user", question);
 
@@ -947,6 +949,7 @@ question
         thinkingRow.remove();
         addMessage("assistant", "Error de conexión: " + error.message);
       } finally {
+        isSending = false;
         questionInput.disabled = false;
         sendButton.disabled = false;
         questionInput.focus();
@@ -954,10 +957,17 @@ question
       }
     }
 
-    document.getElementById("composer").addEventListener("submit", ask);
-    document.getElementById("sendButton").addEventListener("click", ask);
+    document.getElementById("composer").addEventListener("submit", function(event) {
+      event.preventDefault();
+      ask(event);
+    });
+    document.getElementById("sendButton").addEventListener("click", function(event) {
+      event.preventDefault();
+      ask(event);
+    });
     document.getElementById("question").addEventListener("keydown", function(event) {
       if (event.key === "Enter") {
+        event.preventDefault();
         ask(event);
       }
     });
