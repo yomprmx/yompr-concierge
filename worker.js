@@ -3,6 +3,7 @@ import { buildContextByIntent, detectBasicConflicts } from "./src/trip.js";
 import { classifyIntentWithDeepSeek } from "./src/classifier.js";
 import { enrichWithTransportInfo } from "./src/routing.js";
 import { searchPlacesRecommendations } from "./src/recommendations.js";
+import { enrichWithWeatherInfo } from "./src/weather.js";
 import { saveChatLog } from "./src/logging.js";
 
 function normalizeWrappedUrls(text) {
@@ -123,6 +124,7 @@ async function processChatRequest(body, env) {
 
     let recommendationsInfo = null;
     let recommendationsUsed = false;
+    let weatherInfo = null;
 
     if (intent === "recommendation" && analysis.recommendation_query) {
       try {
@@ -134,6 +136,11 @@ async function processChatRequest(body, env) {
       } catch (e) {
         recommendationsInfo = { places: [], error: String(e) };
       }
+    }
+
+    if (intent === "weather" || analysis.tool_needed === "weather") {
+      weatherInfo = await enrichWithWeatherInfo(tripJson, analysis, env);
+      if (weatherInfo) context.weather_info = weatherInfo;
     }
 
     const questionNorm = normalizeText(question);
@@ -251,6 +258,12 @@ Recomendaciones:
 - No menciones todos los campos de cada lugar; sé selectivo y natural.
 - Si recommendations_results está vacío o no existe pero el intent es recommendation, di que no encontraste lugares con datos concretos en la zona y recomienda buscar en Google Maps con el tipo de lugar + barrio del hotel.
 - NUNCA inventes nombres de restaurantes, bares, museos u otros lugares que no estén en context.recommendations_results.
+
+Clima:
+- Si context.weather_info existe, úsalo como fuente prioritaria para responder clima.
+- Si context.weather_info.type = "current_conditions", responde con condición actual, temperatura, sensación térmica, probabilidad de lluvia y una recomendación práctica para el viajero.
+- Si context.weather_info.type = "weather_error", dilo de forma breve y ofrece volver a intentar con ciudad o zona más específica.
+- No inventes pronósticos por hora o por día si no están en context.weather_info.
 
 Rutas:
 - Si transport_info.type = “calculated_route”, usa transport_info como fuente ÚNICA para distancias y tiempos. Prohibido usar conocimiento propio sobre distancias, tiempos o rutas.
