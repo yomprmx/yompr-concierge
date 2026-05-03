@@ -1809,6 +1809,13 @@ Estilo:
 - Si haces una lista, termínala completa y cierra con una conclusión breve.
 - Si detectas emergencia o problema serio, recomienda contactar a Rigo.
 
+URLs y enlaces (REGLA ABSOLUTA):
+- Cuando incluyas cualquier URL (Google Maps, links de lugares, maps_link, googleMapsUri, etc.), escríbela SIEMPRE COMPLETA, EXACTAMENTE como aparece en los datos, empezando por "https://".
+- PROHIBIDO abreviar URLs, quitar el "https://", quitar "www.", o reemplazar parte de la URL con texto descriptivo.
+- PROHIBIDO escribir "maps.google.com/..." sin el "https://" delante. Siempre debe ser "https://maps.google.com/..." o "https://www.google.com/maps/..." según venga en los datos.
+- PROHIBIDO escribir placeholders como "[link]", "[enlace]", "(ver enlace)", "(enlace aquí)" — copia la URL real del campo.
+- Antes de cada URL, deja un espacio para que sea clickeable. Ejemplo correcto: "Aquí está el enlace: https://maps.google.com/?cid=12345"
+
 Recomendaciones:
 - Si context.recommendations_results existe y tiene elementos, úsalo como tu ÚNICA fuente para recomendar lugares. Prohibido inventar o añadir lugares que no estén en esa lista.
 - Elige 2 o 3 opciones de la lista. Prioriza las que tengan mejor rating y más reseñas. Si el usuario pidió precio bajo, filtra por price_level económico primero.
@@ -1826,7 +1833,7 @@ Rutas:
 - Para transporte público: usa ÚNICAMENTE transport_info.options.transit.duration_min y distance_km.
   - Si transit.duration_min tiene un valor numérico, úsalo tal cual. No lo cuestiones ni lo ajustes.
   - Si transit.steps existe, úsalo para explicar la ruta paso a paso: qué línea tomar, desde qué parada, cuántas paradas, dónde transbordar. Esto es lo más valioso que puedes dar al cliente.
-  - Si transit.duration_min es null, di literalmente: “Para el transporte público no tengo el tiempo calculado en este momento; puedes ver las opciones exactas aquí: [transit.maps_link]”. NUNCA estimes, supongas ni uses tu conocimiento general para dar un tiempo de tránsito.
+  - Si transit.duration_min es null, escribe: "Para el transporte público no tengo el tiempo calculado en este momento; puedes ver las opciones exactas aquí: " seguido del valor exacto y completo del campo transport_info.options.transit.maps_link (la URL completa empezando por https://). NO escribas el texto literal "[transit.maps_link]" ni "(enlace de transporte público)" ni nada similar — copia el contenido del campo. NUNCA estimes ni supongas un tiempo de tránsito.
 - REGLA ABSOLUTA: Cualquier tiempo o distancia que menciones debe estar en transport_info. Si no está ahí, no lo digas.
 - No inventes tiempos de ruta bajo ninguna circunstancia, aunque creas conocer la ciudad.
 - Si el usuario pregunta “está cerca”, responde con distancia y duración caminando cuando estén disponibles.
@@ -2217,25 +2224,34 @@ question
       const bubble = document.createElement("div");
       bubble.className = "bubble" + (extraClass ? " " + extraClass : "");
 
-      // Separa URLs del resto del texto
-      const parts = content.split(new RegExp("(https?://[^\\s]+)", "g"));
+      // Separa URLs del resto del texto.
+      // Regex SIN secuencias de escape (\s, \., etc) para no chocar con el procesado del template literal.
+      // Detecta URLs con https:// y URLs bare como "maps.google.com/..." o "www.google.com/maps/..."
+      var URL_PATTERN = "(https?://[^ <>]+|(?:maps|www)[.]google[.]com/[^ <>]+|goo[.]gl/[^ <>]+)";
+      const parts = content.split(new RegExp(URL_PATTERN, "g"));
       for (let i = 0; i < parts.length; i++) {
         if (i % 2 === 1) {
           // Es una URL — limpiar puntuación final que rompe el href
-          const rawUrl = parts[i].replace(new RegExp("[.,;:!?)]+$"), "");
-          const trailing = parts[i].slice(rawUrl.length);
+          var rawUrl = parts[i].replace(new RegExp("[.,;:!?)]+$"), "");
+          var trailing = parts[i].slice(rawUrl.length);
+
+          // Si vino sin protocolo, anteponerlo
+          var hrefUrl = rawUrl;
+          if (!/^https?:/i.test(hrefUrl)) {
+            hrefUrl = "https://" + hrefUrl;
+          }
 
           const a = document.createElement("a");
-          a.href = rawUrl;
+          a.href = hrefUrl;
           a.target = "_blank";
           a.rel = "noopener";
 
           // Texto amigable según el tipo de URL
-          if (rawUrl.includes("google.com/maps")) {
+          if (hrefUrl.indexOf("google.com/maps") !== -1 || hrefUrl.indexOf("maps.google.com") !== -1) {
             a.textContent = "Ver en Google Maps ↗";
           } else {
             try {
-              a.textContent = new URL(rawUrl).hostname;
+              a.textContent = new URL(hrefUrl).hostname;
             } catch (_) {
               a.textContent = rawUrl;
             }
@@ -2244,12 +2260,10 @@ question
           a.style.cssText = "color:#3b82f6;text-decoration:underline;font-weight:500;";
           bubble.appendChild(a);
 
-          // Reañadir la puntuación que se limpió como texto plano
           if (trailing) {
             bubble.appendChild(document.createTextNode(trailing));
           }
         } else {
-          // Texto normal: renderizar markdown básico
           appendStyledText(bubble, parts[i]);
         }
       }
