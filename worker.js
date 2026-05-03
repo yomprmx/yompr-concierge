@@ -395,7 +395,7 @@ No ofrezcas capacidades que no tienes, ni insinúes que podrías hacerlo más ad
   }
 }
 
-const CHAT_CLIENT_JS = `
+const CHAT_CLIENT_JS = String.raw`
 (() => {
   const appRoot = document.getElementById("appRoot");
   const tripId = appRoot && appRoot.dataset ? appRoot.dataset.tripId || "" : "";
@@ -414,7 +414,7 @@ const CHAT_CLIENT_JS = `
 
   function appendStyledText(container, text) {
     var boldRe = /[*][*]([^*]+)[*][*]/g;
-    var lines = text.split("\\n");
+    var lines = text.split("\n");
     for (var li = 0; li < lines.length; li++) {
       if (li > 0) container.appendChild(document.createElement("br"));
       var line = lines[li];
