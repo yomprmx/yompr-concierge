@@ -554,6 +554,17 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
+    if (url.pathname === "/api/chat-client.js") {
+      return new Response(CHAT_CLIENT_JS, {
+        headers: {
+          "Content-Type": "application/javascript; charset=UTF-8",
+          "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+          "Pragma": "no-cache",
+          "Expires": "0"
+        }
+      });
+    }
+
     if (url.pathname === "/") {
       return new Response("Yompr Concierge funcionando 🚀");
     }
@@ -968,7 +979,7 @@ export default {
 </head>
 
 <body>
-  <div class="app" id="appRoot" data-trip-id="${escapeHtml(tripId)}" data-chat-version="v8">
+  <div class="app" id="appRoot" data-trip-id="${escapeHtml(tripId)}" data-chat-version="v9">
     <div class="header">
       <h1>${tripName}</h1>
       <p>${destinationText}</p>
@@ -995,9 +1006,7 @@ export default {
       <button id="sendButton" type="button">Enviar</button>
     </div>
   </div>
-  <script>
-${CHAT_CLIENT_JS}
-  </script>
+  <script src="/api/chat-client.js?v=9" defer></script>
 </body>
 </html>
 `, {
