@@ -1,0 +1,57 @@
+export async function saveChatLog(env, log) {
+  try {
+    const tripId = log.trip_id || "unknown";
+    const logId = tripId + "-" + Date.now() + "-" + Math.random().toString(36).slice(2);
+
+    await env.CHAT_LOGS.put(logId, JSON.stringify({
+      created_at: new Date().toISOString(),
+      trip_id: tripId,
+      question: log.question || "",
+      intent: log.intent || "",
+      scope: log.scope || "",
+      city: log.city || "",
+      answer: log.answer || "",
+      context_characters: log.context_characters || 0,
+      approximate_context_tokens: log.approximate_context_tokens || 0,
+      analysis_thinking_enabled: log.analysis_thinking_enabled || false,
+      thinking_enabled: log.thinking_enabled || false,
+      session_history_messages: log.session_history_messages || 0,
+      transport_used: log.transport_used || false,
+      transport_type: log.transport_type || null,
+      transport_duration_min: log.transport_duration_min || null,
+      transport_distance_km: log.transport_distance_km || null,
+      transport_origin: log.transport_origin || null,
+      transport_destination: log.transport_destination || null,
+      transport_error: log.transport_error || null,
+      walking_duration_min: log.walking_duration_min ?? null,
+      walking_distance_km: log.walking_distance_km ?? null,
+      driving_duration_min: log.driving_duration_min ?? null,
+      driving_distance_km: log.driving_distance_km ?? null,
+      transit_duration_min: log.transit_duration_min ?? null,
+      transit_distance_km: log.transit_distance_km ?? null,
+      route_direction: log.route_direction || null,
+      route_mode: log.route_mode || null,
+      place_name: log.place_name || null,
+      geocode_origin: log.geocode_origin || null,
+      geocode_destination: log.geocode_destination || null,
+      geocode_origin_lat: log.geocode_origin_lat ?? null,
+      geocode_origin_lon: log.geocode_origin_lon ?? null,
+      geocode_destination_lat: log.geocode_destination_lat ?? null,
+      geocode_destination_lon: log.geocode_destination_lon ?? null,
+      recommendations_used: log.recommendations_used || false,
+      recommendations_query: log.recommendations_query || null,
+      recommendations_count: log.recommendations_count ?? null,
+      recommendations_bias_used: log.recommendations_bias_used || false,
+      recommendations_error: log.recommendations_error || null,
+      error_stage: log.error_stage || null,
+      raw_error: log.raw_error || null,
+      used_transport_in_answer: log.used_transport_in_answer || false,
+      geocode_origin_attempted_query: log.geocode_origin_attempted_query || null,
+      geocode_destination_attempted_query: log.geocode_destination_attempted_query || null,
+      geocode_origin_error: log.geocode_origin_error || null,
+      geocode_destination_error: log.geocode_destination_error || null
+    }));
+  } catch (e) {
+    console.log("Error saving chat log:", String(e));
+  }
+}
