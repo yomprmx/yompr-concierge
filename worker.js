@@ -2026,7 +2026,7 @@ question
       const bubble = document.createElement("div");
       bubble.className = "bubble" + (extraClass ? " " + extraClass : "");
 
-      const parts = content.split(/(https?:\/\/[^\s]+)/g);
+      const parts = content.split(new RegExp("(https?://[^\\s]+)", "g"));
       for (let i = 0; i < parts.length; i++) {
         if (i % 2 === 1) {
           const a = document.createElement("a");
