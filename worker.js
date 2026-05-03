@@ -376,6 +376,9 @@ function postProcessAnalysis(analysis) {
     place_name: analysis.place_name || null,
     origin_query: analysis.origin_query || null,
     destination_query: analysis.destination_query || null,
+    recommendation_type: analysis.recommendation_type || null,
+    recommendation_query: analysis.recommendation_query || null,
+    price_preference: analysis.price_preference || null,
     confidence: typeof analysis.confidence === "number" ? analysis.confidence : 0,
     needs_clarification: Boolean(analysis.needs_clarification),
     clarification_question: analysis.clarification_question || null
@@ -2188,6 +2191,23 @@ question
       messages.scrollTop = messages.scrollHeight;
     }
 
+    function appendStyledText(container, text) {
+      // Renderiza **negritas** y saltos de línea en un fragmento de DOM seguro
+      const mdRegex = new RegExp("(\\*\\*[^*]+\\*\\*|\\n)", "g");
+      const parts = text.split(mdRegex);
+      for (const part of parts) {
+        if (part.startsWith("**") && part.endsWith("**")) {
+          const strong = document.createElement("strong");
+          strong.textContent = part.slice(2, -2);
+          container.appendChild(strong);
+        } else if (part === "\n") {
+          container.appendChild(document.createElement("br"));
+        } else {
+          container.appendChild(document.createTextNode(part));
+        }
+      }
+    }
+
     function addMessage(role, content, extraClass) {
       const messages = document.getElementById("messages");
 
@@ -2197,18 +2217,40 @@ question
       const bubble = document.createElement("div");
       bubble.className = "bubble" + (extraClass ? " " + extraClass : "");
 
+      // Separa URLs del resto del texto
       const parts = content.split(new RegExp("(https?://[^\\s]+)", "g"));
       for (let i = 0; i < parts.length; i++) {
         if (i % 2 === 1) {
+          // Es una URL — limpiar puntuación final que rompe el href
+          const rawUrl = parts[i].replace(new RegExp("[.,;:!?)]+$"), "");
+          const trailing = parts[i].slice(rawUrl.length);
+
           const a = document.createElement("a");
-          a.href = parts[i];
+          a.href = rawUrl;
           a.target = "_blank";
           a.rel = "noopener";
-          a.textContent = parts[i];
-          a.style.cssText = "color:#3b82f6;text-decoration:underline;word-break:break-all;";
+
+          // Texto amigable según el tipo de URL
+          if (rawUrl.includes("google.com/maps")) {
+            a.textContent = "Ver en Google Maps ↗";
+          } else {
+            try {
+              a.textContent = new URL(rawUrl).hostname;
+            } catch (_) {
+              a.textContent = rawUrl;
+            }
+          }
+
+          a.style.cssText = "color:#3b82f6;text-decoration:underline;font-weight:500;";
           bubble.appendChild(a);
+
+          // Reañadir la puntuación que se limpió como texto plano
+          if (trailing) {
+            bubble.appendChild(document.createTextNode(trailing));
+          }
         } else {
-          bubble.appendChild(document.createTextNode(parts[i]));
+          // Texto normal: renderizar markdown básico
+          appendStyledText(bubble, parts[i]);
         }
       }
 
