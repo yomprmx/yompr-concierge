@@ -41,7 +41,7 @@ const CHAT_CLIENT_JS = `
   }
 
   function appendStyledText(container, text) {
-    var boldRe = new RegExp("[*][*]([^*]+)[*][*]", "g");
+    var boldRe = /[*][*]([^*]+)[*][*]/g;
     var lines = text.split("\\n");
     for (var li = 0; li < lines.length; li++) {
       if (li > 0) container.appendChild(document.createElement("br"));
@@ -71,8 +71,8 @@ const CHAT_CLIENT_JS = `
     const bubble = document.createElement("div");
     bubble.className = "bubble" + (extraClass ? " " + extraClass : "");
 
-    var urlRe = new RegExp("https?://[^\\s<>]+|(?:maps|www)[.]google[.]com/[^\\s<>]+|goo[.]gl/[^\\s<>]+", "g");
-    var trailRe = new RegExp("[.,;:!?)]+$");
+    var urlRe = /https?:\/\/[^\s<>]+|(?:maps|www)[.]google[.]com\/[^\s<>]+|goo[.]gl\/[^\s<>]+/g;
+    var trailRe = /[.,;:!?)]+$/;
     var lastIdx = 0;
     var um;
     urlRe.lastIndex = 0;
@@ -182,7 +182,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    if (url.pathname === "/chat-client-v4.js") {
+    if (url.pathname === "/chat-client-v5.js") {
       return new Response(CHAT_CLIENT_JS, {
         headers: {
           "Content-Type": "application/javascript; charset=UTF-8",
@@ -980,7 +980,7 @@ question
       <button id="sendButton" type="button">Enviar</button>
     </div>
   </div>
-  <script src="/chat-client-v4.js" defer></script>
+  <script src="/chat-client-v5.js" defer></script>
 </body>
 </html>
 `, {
