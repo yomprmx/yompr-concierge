@@ -88,8 +88,12 @@ const CHAT_CLIENT_JS = `
       a.href = hrefUrl;
       a.target = "_blank";
       a.rel = "noopener";
-      var isMaps = hrefUrl.indexOf("maps.google.com") !== -1 || hrefUrl.indexOf("google.com/maps") !== -1;
-      a.textContent = isMaps ? "Ver en Google Maps" : hrefUrl;
+      var normalizedHref = hrefUrl.toLowerCase();
+      var isMaps =
+        normalizedHref.indexOf("maps.google.com") !== -1 ||
+        normalizedHref.indexOf("google.com/maps") !== -1 ||
+        normalizedHref.indexOf("google.com/travel") !== -1;
+      a.textContent = isMaps ? "Ver en Google Maps" : (hrefUrl.length > 80 ? "Abrir enlace" : hrefUrl);
       a.style.cssText = "color:#3b82f6;text-decoration:underline;font-weight:500;";
       bubble.appendChild(a);
 
@@ -974,7 +978,7 @@ question
       <button id="sendButton" type="button">Enviar</button>
     </div>
   </div>
-  <script src="/chat-client.js?v=2" defer></script>
+  <script src="/chat-client.js?v=3" defer></script>
 </body>
 </html>
 `, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
