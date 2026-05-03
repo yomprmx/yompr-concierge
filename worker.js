@@ -782,14 +782,14 @@ question
       </div>
     </div>
 
-    <div id="composer" class="composer">
+    <form id="composer" class="composer" onsubmit="ask(event); return false;">
       <input
         id="question"
         placeholder="Escribe tu pregunta..."
         autocomplete="off"
       />
-      <button id="sendButton" type="button">Enviar</button>
-    </div>
+      <button id="sendButton" type="submit" onclick="ask(event)">Enviar</button>
+    </form>
   </div>
 
   <script>
@@ -888,6 +888,7 @@ question
       const sendButton = document.getElementById("sendButton");
       const question = questionInput.value.trim();
 
+      if (sendButton.disabled) return;
       if (!question) return;
 
       addMessage("user", question);
@@ -953,6 +954,7 @@ question
       }
     }
 
+    document.getElementById("composer").addEventListener("submit", ask);
     document.getElementById("sendButton").addEventListener("click", ask);
     document.getElementById("question").addEventListener("keydown", function(event) {
       if (event.key === "Enter") {
