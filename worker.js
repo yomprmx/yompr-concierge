@@ -672,7 +672,7 @@ function getGeocodeCacheKey(query, options = {}) {
 async function rememberGeocodeResult(env, cacheKey, value) {
   if (!cacheKey || !env?.TRIPS) return;
   try {
-    await env.TRIPS.put("geo:" + cacheKey, JSON.stringify(value), { expirationTtl: GEOCODE_CACHE_TTL });
+    await env.TRIPS.put("geo:v2:" + cacheKey, JSON.stringify(value), { expirationTtl: GEOCODE_CACHE_TTL });
   } catch (_) {}
 }
 
@@ -752,9 +752,12 @@ function buildGeocodeQueries(query, city = null, country = null) {
   return uniqueValues(expandedQueries);
 }
 
-async function geocodePlacesSearch(query, env) {
+async function geocodePlacesSearch(query, env, placeType = null) {
   if (!query || !env?.GOOGLE_MAPS_KEY) return null;
   try {
+    const body = { textQuery: query };
+    if (placeType) body.includedType = placeType;
+
     const res = await fetch("https://places.googleapis.com/v1/places:searchText", {
       method: "POST",
       headers: {
@@ -762,7 +765,7 @@ async function geocodePlacesSearch(query, env) {
         "X-Goog-Api-Key": env.GOOGLE_MAPS_KEY,
         "X-Goog-FieldMask": "places.displayName,places.formattedAddress,places.location"
       },
-      body: JSON.stringify({ textQuery: query })
+      body: JSON.stringify(body)
     });
     if (!res.ok) return null;
     const data = await res.json();
@@ -818,7 +821,7 @@ async function geocodeDetailed(query, options = {}, env = null) {
 
   if (env?.TRIPS) {
     try {
-      const cached = await env.TRIPS.get("geo:" + cacheKey);
+      const cached = await env.TRIPS.get("geo:v2:" + cacheKey);
       if (cached) return JSON.parse(cached);
     } catch (_) {}
   }
@@ -856,8 +859,9 @@ async function geocodeDetailed(query, options = {}, env = null) {
   for (const candidate of candidates) {
     attemptedQueries.push(candidate);
 
-    // Places Text Search primero: entiende nombres de lugares semánticamente
-    const placesResult = await geocodePlacesSearch(candidate, env);
+    // Para aeropuertos usamos includedType:"airport" para evitar oficinas y agencias
+    const placeType = isAirportLike ? "airport" : null;
+    const placesResult = await geocodePlacesSearch(candidate, env, placeType);
 
     if (placesResult?.lat) {
       const value = {
