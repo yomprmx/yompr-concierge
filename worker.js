@@ -782,14 +782,15 @@ question
       </div>
     </div>
 
-    <form id="composer" class="composer">
+    <div id="composer" class="composer">
       <input
         id="question"
         placeholder="Escribe tu pregunta..."
         autocomplete="off"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();ask(event);}"
       />
       <button id="sendButton" type="button" onclick="ask(event)">Enviar</button>
-    </form>
+    </div>
   </div>
 
   <script>
@@ -952,8 +953,6 @@ question
         scrollToBottom();
       }
     }
-
-    document.getElementById("composer").addEventListener("submit", ask);
 
     scrollToBottom();
   </script>
