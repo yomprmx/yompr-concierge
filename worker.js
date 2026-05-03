@@ -787,9 +787,8 @@ question
         id="question"
         placeholder="Escribe tu pregunta..."
         autocomplete="off"
-        onkeydown="if(event.key==='Enter'){event.preventDefault();ask(event);}"
       />
-      <button id="sendButton" type="button" onclick="ask(event)">Enviar</button>
+      <button id="sendButton" type="button">Enviar</button>
     </div>
   </div>
 
@@ -953,6 +952,13 @@ question
         scrollToBottom();
       }
     }
+
+    document.getElementById("sendButton").addEventListener("click", ask);
+    document.getElementById("question").addEventListener("keydown", function(event) {
+      if (event.key === "Enter") {
+        ask(event);
+      }
+    });
 
     scrollToBottom();
   </script>
