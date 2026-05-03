@@ -980,7 +980,9 @@ question
       <button id="sendButton" type="button">Enviar</button>
     </div>
   </div>
-  <script src="/chat-client-v5.js" defer></script>
+  <script>
+${CHAT_CLIENT_JS}
+  </script>
 </body>
 </html>
 `, {
