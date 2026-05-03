@@ -53,7 +53,7 @@ const CHAT_CLIENT_JS = `
     const bubble = document.createElement("div");
     bubble.className = "bubble" + (extraClass ? " " + extraClass : "");
 
-    var urlRe = new RegExp("https?://[^ <>]+|(?:maps|www)[.]google[.]com/[^ <>]+|goo[.]gl/[^ <>]+", "g");
+    var urlRe = new RegExp("https?://[^\\s<>]+|(?:maps|www)[.]google[.]com/[^\\s<>]+|goo[.]gl/[^\\s<>]+", "g");
     var trailRe = new RegExp("[.,;:!?)]+$");
     var lastIdx = 0;
     var um;
@@ -571,6 +571,10 @@ Estilo:
 - No uses lenguaje técnico.
 - Si haces una lista, termínala completa y cierra con una conclusión breve.
 - Si detectas emergencia o problema serio, recomienda contactar a Rigo.
+- Formato obligatorio: usa párrafos cortos, con una línea en blanco entre bloques.
+- Cuando des 2 o más opciones (rutas o recomendaciones), enuméralas como "1.", "2.", "3.".
+- Cada opción debe ir en su propio bloque; no mezcles dos opciones en el mismo párrafo.
+- Después de una URL, inicia una nueva línea o un nuevo párrafo; nunca pegues texto seguido en la misma línea.
 
 URLs y enlaces (REGLA ABSOLUTA):
 - Cuando incluyas cualquier URL (Google Maps, links de lugares, maps_link, googleMapsUri, etc.), escríbela SIEMPRE COMPLETA, EXACTAMENTE como aparece en los datos, empezando por "https://".
