@@ -541,6 +541,11 @@ const CHAT_CLIENT_JS = `
     }
   }
 
+  window.YOMPR_CHAT_ASK = ask;
+  window.YOMPR_CHAT_KEY = function(event) {
+    if (event.key === "Enter") ask(event);
+  };
+
   sendButton.addEventListener("click", ask);
   questionInput.addEventListener("keydown", function(event) {
     if (event.key === "Enter") ask(event);
@@ -979,7 +984,7 @@ export default {
 </head>
 
 <body>
-  <div class="app" id="appRoot" data-trip-id="${escapeHtml(tripId)}" data-chat-version="v9">
+  <div class="app" id="appRoot" data-trip-id="${escapeHtml(tripId)}" data-chat-version="v10">
     <div class="header">
       <h1>${tripName}</h1>
       <p>${destinationText}</p>
@@ -1002,11 +1007,14 @@ export default {
         id="question"
         placeholder="Escribe tu pregunta..."
         autocomplete="off"
+        onkeydown="window.YOMPR_CHAT_KEY && window.YOMPR_CHAT_KEY(event)"
       />
-      <button id="sendButton" type="button">Enviar</button>
+      <button id="sendButton" type="button" onclick="window.YOMPR_CHAT_ASK && window.YOMPR_CHAT_ASK(event)">Enviar</button>
     </div>
   </div>
-  <script src="/api/chat-client.js?v=9" defer></script>
+  <script>
+${CHAT_CLIENT_JS}
+  </script>
 </body>
 </html>
 `, {
