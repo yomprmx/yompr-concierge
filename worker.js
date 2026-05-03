@@ -2192,18 +2192,18 @@ question
     }
 
     function appendStyledText(container, text) {
-      // Renderiza **negritas** y saltos de línea en un fragmento de DOM seguro
-      const mdRegex = new RegExp("(\\*\\*[^*]+\\*\\*|\\n)", "g");
-      const parts = text.split(mdRegex);
-      for (const part of parts) {
-        if (part.startsWith("**") && part.endsWith("**")) {
-          const strong = document.createElement("strong");
-          strong.textContent = part.slice(2, -2);
-          container.appendChild(strong);
-        } else if (part === "\n") {
-          container.appendChild(document.createElement("br"));
-        } else {
-          container.appendChild(document.createTextNode(part));
+      var lines = text.split("\\n");
+      for (var li = 0; li < lines.length; li++) {
+        if (li > 0) container.appendChild(document.createElement("br"));
+        var boldParts = lines[li].split("**");
+        for (var bi = 0; bi < boldParts.length; bi++) {
+          if (bi % 2 === 1) {
+            var strong = document.createElement("strong");
+            strong.textContent = boldParts[bi];
+            container.appendChild(strong);
+          } else {
+            container.appendChild(document.createTextNode(boldParts[bi]));
+          }
         }
       }
     }
