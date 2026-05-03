@@ -5,9 +5,169 @@ import { enrichWithTransportInfo } from "./src/routing.js";
 import { searchPlacesRecommendations } from "./src/recommendations.js";
 import { saveChatLog } from "./src/logging.js";
 
+const CHAT_CLIENT_JS = `
+(() => {
+  const appRoot = document.getElementById("appRoot");
+  const tripId = appRoot && appRoot.dataset ? appRoot.dataset.tripId || "" : "";
+  const questionInput = document.getElementById("question");
+  const sendButton = document.getElementById("sendButton");
+  const messages = document.getElementById("messages");
+
+  if (!tripId || !questionInput || !sendButton || !messages) return;
+
+  let conversationHistory = [];
+  let isSending = false;
+
+  function scrollToBottom() {
+    messages.scrollTop = messages.scrollHeight;
+  }
+
+  function appendStyledText(container, text) {
+    var boldRe = new RegExp("[*][*]([^*]+)[*][*]", "g");
+    var lines = text.split("\\n");
+    for (var li = 0; li < lines.length; li++) {
+      if (li > 0) container.appendChild(document.createElement("br"));
+      var line = lines[li];
+      var lastBold = 0;
+      var bm;
+      boldRe.lastIndex = 0;
+      while ((bm = boldRe.exec(line)) !== null) {
+        if (bm.index > lastBold) {
+          container.appendChild(document.createTextNode(line.slice(lastBold, bm.index)));
+        }
+        var strong = document.createElement("strong");
+        strong.textContent = bm[1];
+        container.appendChild(strong);
+        lastBold = bm.index + bm[0].length;
+      }
+      if (lastBold < line.length) {
+        container.appendChild(document.createTextNode(line.slice(lastBold)));
+      }
+    }
+  }
+
+  function addMessage(role, content, extraClass) {
+    const row = document.createElement("div");
+    row.className = "message-row " + role;
+
+    const bubble = document.createElement("div");
+    bubble.className = "bubble" + (extraClass ? " " + extraClass : "");
+
+    var urlRe = new RegExp("https?://[^ <>]+|(?:maps|www)[.]google[.]com/[^ <>]+|goo[.]gl/[^ <>]+", "g");
+    var trailRe = new RegExp("[.,;:!?)]+$");
+    var lastIdx = 0;
+    var um;
+    urlRe.lastIndex = 0;
+
+    while ((um = urlRe.exec(content)) !== null) {
+      if (um.index > lastIdx) {
+        appendStyledText(bubble, content.slice(lastIdx, um.index));
+      }
+      var rawUrl = um[0].replace(trailRe, "");
+      var hrefUrl = rawUrl.indexOf("http") === 0 ? rawUrl : "https://" + rawUrl;
+
+      var a = document.createElement("a");
+      a.href = hrefUrl;
+      a.target = "_blank";
+      a.rel = "noopener";
+      var isMaps = hrefUrl.indexOf("maps.google.com") !== -1 || hrefUrl.indexOf("google.com/maps") !== -1;
+      a.textContent = isMaps ? "Ver en Google Maps" : hrefUrl;
+      a.style.cssText = "color:#3b82f6;text-decoration:underline;font-weight:500;";
+      bubble.appendChild(a);
+
+      lastIdx = um.index + um[0].length;
+    }
+
+    if (lastIdx < content.length) {
+      appendStyledText(bubble, content.slice(lastIdx));
+    }
+
+    row.appendChild(bubble);
+    messages.appendChild(row);
+    scrollToBottom();
+    return row;
+  }
+
+  async function ask(event) {
+    if (event && typeof event.preventDefault === "function") event.preventDefault();
+    if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+    if (isSending || sendButton.disabled) return;
+
+    const question = questionInput.value.trim();
+    if (!question) return;
+
+    isSending = true;
+    addMessage("user", question);
+
+    questionInput.value = "";
+    questionInput.disabled = true;
+    sendButton.disabled = true;
+
+    const thinkingRow = addMessage("assistant", "Pensando...", "typing");
+
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const localDate = new Date().toLocaleDateString("en-CA", { timeZone: timeZone });
+
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tripId: tripId,
+          question: question,
+          timeZone: timeZone,
+          localDate: localDate,
+          conversationHistory: conversationHistory
+        })
+      });
+
+      const data = await res.json();
+      thinkingRow.remove();
+
+      if (!res.ok) {
+        const errorText = "Error: " + (data.answer || data.message || JSON.stringify(data));
+        addMessage("assistant", errorText);
+        return;
+      }
+
+      const answer = data.answer || "No recibí respuesta.";
+      addMessage("assistant", answer);
+      conversationHistory.push({ role: "user", content: question });
+      conversationHistory.push({ role: "assistant", content: answer });
+      conversationHistory = conversationHistory.slice(-8);
+    } catch (error) {
+      thinkingRow.remove();
+      addMessage("assistant", "Error de conexión: " + error.message);
+    } finally {
+      isSending = false;
+      questionInput.disabled = false;
+      sendButton.disabled = false;
+      questionInput.focus();
+      scrollToBottom();
+    }
+  }
+
+  sendButton.addEventListener("click", ask);
+  questionInput.addEventListener("keydown", function(event) {
+    if (event.key === "Enter") ask(event);
+  });
+
+  scrollToBottom();
+})();
+`;
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+
+    if (url.pathname === "/chat-client.js") {
+      return new Response(CHAT_CLIENT_JS, {
+        headers: {
+          "Content-Type": "application/javascript; charset=UTF-8",
+          "Cache-Control": "no-store"
+        }
+      });
+    }
 
     if (url.pathname === "/") {
       return new Response("Yompr Concierge funcionando 🚀");
@@ -764,7 +924,7 @@ question
 </head>
 
 <body>
-  <div class="app">
+  <div class="app" id="appRoot" data-trip-id="${escapeHtml(tripId)}">
     <div class="header">
       <h1>${tripName}</h1>
       <p>${destinationText}</p>
@@ -782,198 +942,16 @@ question
       </div>
     </div>
 
-    <form id="composer" class="composer" onsubmit="return false;">
+    <div id="composer" class="composer">
       <input
         id="question"
         placeholder="Escribe tu pregunta..."
         autocomplete="off"
       />
       <button id="sendButton" type="button">Enviar</button>
-    </form>
+    </div>
   </div>
-
-  <script>
-    let conversationHistory = [];
-    let isSending = false;
-
-    function scrollToBottom() {
-      const messages = document.getElementById("messages");
-      messages.scrollTop = messages.scrollHeight;
-    }
-
-    // Renderiza texto con negritas (**texto**) y saltos de linea en nodos DOM.
-    // Usa [*][*] como char-class para evitar cualquier escape en template literal.
-    // "\\n" en template produce "\n" en el browser = caracter de salto de linea real.
-    function appendStyledText(container, text) {
-      var boldRe = new RegExp("[*][*]([^*]+)[*][*]", "g");
-      var lines = text.split("\\n");
-      for (var li = 0; li < lines.length; li++) {
-        if (li > 0) container.appendChild(document.createElement("br"));
-        var line = lines[li];
-        var lastBold = 0;
-        var bm;
-        boldRe.lastIndex = 0;
-        while ((bm = boldRe.exec(line)) !== null) {
-          if (bm.index > lastBold) {
-            container.appendChild(document.createTextNode(line.slice(lastBold, bm.index)));
-          }
-          var strong = document.createElement("strong");
-          strong.textContent = bm[1];
-          container.appendChild(strong);
-          lastBold = bm.index + bm[0].length;
-        }
-        if (lastBold < line.length) {
-          container.appendChild(document.createTextNode(line.slice(lastBold)));
-        }
-      }
-    }
-
-    function addMessage(role, content, extraClass) {
-      const messages = document.getElementById("messages");
-
-      const row = document.createElement("div");
-      row.className = "message-row " + role;
-
-      const bubble = document.createElement("div");
-      bubble.className = "bubble" + (extraClass ? " " + extraClass : "");
-
-      // Detecta URLs con exec() en loop (evita ambiguedades de split+capturing group).
-      // Regex sin secuencias de escape: [^ <>] para "no espacio/chevron", [.] para punto literal.
-      var urlRe = new RegExp("https?://[^ <>]+|(?:maps|www)[.]google[.]com/[^ <>]+|goo[.]gl/[^ <>]+", "g");
-      var trailRe = new RegExp("[.,;:!?)]+$");
-      var lastIdx = 0;
-      var um;
-      urlRe.lastIndex = 0;
-
-      while ((um = urlRe.exec(content)) !== null) {
-        // Texto antes de la URL
-        if (um.index > lastIdx) {
-          appendStyledText(bubble, content.slice(lastIdx, um.index));
-        }
-        // Limpiar puntuacion final que romperia el href
-        var rawUrl = um[0].replace(trailRe, "");
-        // Añadir protocolo si falta
-        var hrefUrl = rawUrl.indexOf("http") === 0 ? rawUrl : "https://" + rawUrl;
-
-        var a = document.createElement("a");
-        a.href = hrefUrl;
-        a.target = "_blank";
-        a.rel = "noopener";
-        var isMaps = hrefUrl.indexOf("maps.google.com") !== -1 || hrefUrl.indexOf("google.com/maps") !== -1;
-        a.textContent = isMaps ? "Ver en Google Maps" : hrefUrl;
-        a.style.cssText = "color:#3b82f6;text-decoration:underline;font-weight:500;";
-        bubble.appendChild(a);
-
-        lastIdx = um.index + um[0].length;
-      }
-
-      // Texto restante despues de la ultima URL
-      if (lastIdx < content.length) {
-        appendStyledText(bubble, content.slice(lastIdx));
-      }
-
-      row.appendChild(bubble);
-      messages.appendChild(row);
-
-      scrollToBottom();
-
-      return row;
-    }
-
-    async function ask(event) {
-      if (event && typeof event.preventDefault === "function") event.preventDefault();
-      if (event && typeof event.stopPropagation === "function") event.stopPropagation();
-
-      const questionInput = document.getElementById("question");
-      const sendButton = document.getElementById("sendButton");
-      const question = questionInput.value.trim();
-
-      if (isSending || sendButton.disabled) return;
-      if (!question) return;
-
-      isSending = true;
-
-      addMessage("user", question);
-
-      questionInput.value = "";
-      questionInput.disabled = true;
-      sendButton.disabled = true;
-
-      const thinkingRow = addMessage("assistant", "Pensando...", "typing");
-
-      const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-
-      const localDate = new Date().toLocaleDateString("en-CA", {
-        timeZone: timeZone
-      });
-
-      try {
-        const res = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            tripId: "${tripId}",
-            question: question,
-            timeZone: timeZone,
-            localDate: localDate,
-            conversationHistory: conversationHistory
-          })
-        });
-
-        const data = await res.json();
-
-        thinkingRow.remove();
-
-        if (!res.ok) {
-          const errorText = "Error: " + (data.answer || data.message || JSON.stringify(data));
-          addMessage("assistant", errorText);
-          return;
-        }
-
-        const answer = data.answer || "No recibí respuesta.";
-        addMessage("assistant", answer);
-
-        conversationHistory.push({
-          role: "user",
-          content: question
-        });
-
-        conversationHistory.push({
-          role: "assistant",
-          content: answer
-        });
-
-        conversationHistory = conversationHistory.slice(-8);
-
-      } catch (error) {
-        thinkingRow.remove();
-        addMessage("assistant", "Error de conexión: " + error.message);
-      } finally {
-        isSending = false;
-        questionInput.disabled = false;
-        sendButton.disabled = false;
-        questionInput.focus();
-        scrollToBottom();
-      }
-    }
-
-    document.getElementById("composer").addEventListener("submit", function(event) {
-      event.preventDefault();
-      ask(event);
-    });
-    document.getElementById("sendButton").addEventListener("click", function(event) {
-      event.preventDefault();
-      ask(event);
-    });
-    document.getElementById("question").addEventListener("keydown", function(event) {
-      if (event.key === "Enter") {
-        event.preventDefault();
-        ask(event);
-      }
-    });
-
-    scrollToBottom();
-  </script>
+  <script src="/chat-client.js?v=2" defer></script>
 </body>
 </html>
 `, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
