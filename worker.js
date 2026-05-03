@@ -555,10 +555,6 @@ const CHAT_CLIENT_JS = `
   }
 
   composer.addEventListener("submit", ask);
-  sendButton.addEventListener("click", ask);
-  questionInput.addEventListener("keydown", function(event) {
-    if (event.key === "Enter") ask(event);
-  });
 
   scrollToBottom();
 })();
