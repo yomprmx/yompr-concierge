@@ -2198,19 +2198,29 @@ question
       messages.scrollTop = messages.scrollHeight;
     }
 
+    // Renderiza texto con negritas (**texto**) y saltos de linea en nodos DOM.
+    // Usa [*][*] como char-class para evitar cualquier escape en template literal.
+    // "\\n" en template produce "\n" en el browser = caracter de salto de linea real.
     function appendStyledText(container, text) {
+      var boldRe = new RegExp("[*][*]([^*]+)[*][*]", "g");
       var lines = text.split("\\n");
       for (var li = 0; li < lines.length; li++) {
         if (li > 0) container.appendChild(document.createElement("br"));
-        var boldParts = lines[li].split("**");
-        for (var bi = 0; bi < boldParts.length; bi++) {
-          if (bi % 2 === 1) {
-            var strong = document.createElement("strong");
-            strong.textContent = boldParts[bi];
-            container.appendChild(strong);
-          } else {
-            container.appendChild(document.createTextNode(boldParts[bi]));
+        var line = lines[li];
+        var lastBold = 0;
+        var bm;
+        boldRe.lastIndex = 0;
+        while ((bm = boldRe.exec(line)) !== null) {
+          if (bm.index > lastBold) {
+            container.appendChild(document.createTextNode(line.slice(lastBold, bm.index)));
           }
+          var strong = document.createElement("strong");
+          strong.textContent = bm[1];
+          container.appendChild(strong);
+          lastBold = bm.index + bm[0].length;
+        }
+        if (lastBold < line.length) {
+          container.appendChild(document.createTextNode(line.slice(lastBold)));
         }
       }
     }
@@ -2224,48 +2234,39 @@ question
       const bubble = document.createElement("div");
       bubble.className = "bubble" + (extraClass ? " " + extraClass : "");
 
-      // Separa URLs del resto del texto.
-      // Regex SIN secuencias de escape (\s, \., etc) para no chocar con el procesado del template literal.
-      // Detecta URLs con https:// y URLs bare como "maps.google.com/..." o "www.google.com/maps/..."
-      var URL_PATTERN = "(https?://[^ <>]+|(?:maps|www)[.]google[.]com/[^ <>]+|goo[.]gl/[^ <>]+)";
-      const parts = content.split(new RegExp(URL_PATTERN, "g"));
-      for (let i = 0; i < parts.length; i++) {
-        if (i % 2 === 1) {
-          // Es una URL — limpiar puntuación final que rompe el href
-          var rawUrl = parts[i].replace(new RegExp("[.,;:!?)]+$"), "");
-          var trailing = parts[i].slice(rawUrl.length);
+      // Detecta URLs con exec() en loop (evita ambiguedades de split+capturing group).
+      // Regex sin secuencias de escape: [^ <>] para "no espacio/chevron", [.] para punto literal.
+      var urlRe = new RegExp("https?://[^ <>]+|(?:maps|www)[.]google[.]com/[^ <>]+|goo[.]gl/[^ <>]+", "g");
+      var trailRe = new RegExp("[.,;:!?)]+$");
+      var lastIdx = 0;
+      var um;
+      urlRe.lastIndex = 0;
 
-          // Si vino sin protocolo, anteponerlo
-          var hrefUrl = rawUrl;
-          if (!/^https?:/i.test(hrefUrl)) {
-            hrefUrl = "https://" + hrefUrl;
-          }
-
-          const a = document.createElement("a");
-          a.href = hrefUrl;
-          a.target = "_blank";
-          a.rel = "noopener";
-
-          // Texto amigable según el tipo de URL
-          if (hrefUrl.indexOf("google.com/maps") !== -1 || hrefUrl.indexOf("maps.google.com") !== -1) {
-            a.textContent = "Ver en Google Maps ↗";
-          } else {
-            try {
-              a.textContent = new URL(hrefUrl).hostname;
-            } catch (_) {
-              a.textContent = rawUrl;
-            }
-          }
-
-          a.style.cssText = "color:#3b82f6;text-decoration:underline;font-weight:500;";
-          bubble.appendChild(a);
-
-          if (trailing) {
-            bubble.appendChild(document.createTextNode(trailing));
-          }
-        } else {
-          appendStyledText(bubble, parts[i]);
+      while ((um = urlRe.exec(content)) !== null) {
+        // Texto antes de la URL
+        if (um.index > lastIdx) {
+          appendStyledText(bubble, content.slice(lastIdx, um.index));
         }
+        // Limpiar puntuacion final que romperia el href
+        var rawUrl = um[0].replace(trailRe, "");
+        // Añadir protocolo si falta
+        var hrefUrl = rawUrl.indexOf("http") === 0 ? rawUrl : "https://" + rawUrl;
+
+        var a = document.createElement("a");
+        a.href = hrefUrl;
+        a.target = "_blank";
+        a.rel = "noopener";
+        var isMaps = hrefUrl.indexOf("maps.google.com") !== -1 || hrefUrl.indexOf("google.com/maps") !== -1;
+        a.textContent = isMaps ? "Ver en Google Maps" : hrefUrl;
+        a.style.cssText = "color:#3b82f6;text-decoration:underline;font-weight:500;";
+        bubble.appendChild(a);
+
+        lastIdx = um.index + um[0].length;
+      }
+
+      // Texto restante despues de la ultima URL
+      if (lastIdx < content.length) {
+        appendStyledText(bubble, content.slice(lastIdx));
       }
 
       row.appendChild(bubble);
