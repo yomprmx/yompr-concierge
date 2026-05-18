@@ -139,7 +139,11 @@ async function processChatRequest(body, env) {
     }
 
     if (intent === "weather" || analysis.tool_needed === "weather") {
-      weatherInfo = await enrichWithWeatherInfo(tripJson, analysis, env);
+      weatherInfo = await enrichWithWeatherInfo(
+        tripJson,
+        { ...analysis, original_question: question },
+        env
+      );
       if (weatherInfo) context.weather_info = weatherInfo;
     }
 
@@ -261,7 +265,11 @@ Recomendaciones:
 
 Clima:
 - Si context.weather_info existe, úsalo como fuente prioritaria para responder clima.
-- Si context.weather_info.type = "current_conditions", responde con condición actual, temperatura, sensación térmica, probabilidad de lluvia y una recomendación práctica para el viajero.
+- Si context.weather_info.type = "weather_bundle", úsalo así:
+  - Para preguntas de "ahora"/"hoy": usa current.
+  - Para preguntas de "mañana": usa forecast_days[1] si existe.
+  - Para preguntas de "próximos días"/"esta semana": resume 2 a 3 días de forecast_days de forma compacta.
+  - Incluye temperatura min/max y probabilidad de lluvia cuando esté disponible.
 - Si context.weather_info.type = "weather_error", dilo de forma breve y ofrece volver a intentar con ciudad o zona más específica.
 - No inventes pronósticos por hora o por día si no están en context.weather_info.
 

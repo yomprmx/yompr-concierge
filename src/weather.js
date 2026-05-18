@@ -87,6 +87,35 @@ function parseWeatherSnapshot(payload) {
   };
 }
 
+function parseForecastDay(day) {
+  if (!day || typeof day !== "object") return null;
+  const daytime = day.daytimeForecast || day.daytime || {};
+  const nighttime = day.nighttimeForecast || day.nighttime || {};
+
+  const daytimePop = daytime.precipitation?.probability?.percent ?? null;
+  const nighttimePop = nighttime.precipitation?.probability?.percent ?? null;
+  const maxPop = [daytimePop, nighttimePop].filter(v => typeof v === "number").reduce((m, v) => Math.max(m, v), null);
+
+  return {
+    display_date: day.displayDate || null,
+    interval_start: day.interval?.startTime || null,
+    interval_end: day.interval?.endTime || null,
+    max_temp_c: day.maxTemperature?.degrees ?? null,
+    min_temp_c: day.minTemperature?.degrees ?? null,
+    daytime_condition: daytime.weatherCondition?.description?.text || daytime.weatherCondition?.type || null,
+    nighttime_condition: nighttime.weatherCondition?.description?.text || nighttime.weatherCondition?.type || null,
+    precipitation_probability_percent: maxPop
+  };
+}
+
+function resolveForecastDaysByQuestion(analysis) {
+  const q = normalizeText(analysis.original_question || "");
+  const dateRef = normalizeText(analysis.date_reference || "");
+  if (q.includes("mañana") || q.includes("manana") || dateRef === "mañana" || dateRef === "manana") return 2;
+  if (q.includes("esta semana") || q.includes("próximos") || q.includes("proximos")) return 5;
+  return 3;
+}
+
 export async function enrichWithWeatherInfo(tripJson, analysis, env = null) {
   if (analysis.tool_needed !== "weather" && analysis.intent !== "weather") return null;
   if (!env?.GOOGLE_MAPS_KEY) {
@@ -128,28 +157,41 @@ export async function enrichWithWeatherInfo(tripJson, analysis, env = null) {
     unitsSystem: "METRIC",
     languageCode: "es"
   });
+  const forecastDaysRequested = resolveForecastDaysByQuestion(analysis);
 
   try {
-    const res = await fetch(`https://weather.googleapis.com/v1/currentConditions:lookup?${params.toString()}`);
-    const data = await res.json();
-    if (!res.ok) {
+    const [currentRes, forecastRes] = await Promise.all([
+      fetch(`https://weather.googleapis.com/v1/currentConditions:lookup?${params.toString()}`),
+      fetch(`https://weather.googleapis.com/v1/forecast/days:lookup?${params.toString()}&days=${forecastDaysRequested}`)
+    ]);
+
+    const currentData = await currentRes.json();
+    const forecastData = await forecastRes.json();
+
+    if (!currentRes.ok && !forecastRes.ok) {
       return {
         type: "weather_error",
-        error: `Weather API error: ${res.status}`,
-        details: data?.error?.message || null,
+        error: `Weather API error: current=${currentRes.status}, forecast=${forecastRes.status}`,
+        details: currentData?.error?.message || forecastData?.error?.message || null,
         geocode_location: geocodeInfo.result.display_name || null
       };
     }
 
+    const forecastDays = Array.isArray(forecastData?.forecastDays)
+      ? forecastData.forecastDays.map(parseForecastDay).filter(Boolean)
+      : [];
+
     return {
-      type: "current_conditions",
+      type: "weather_bundle",
       source: "google_weather_api",
       geocode_location: geocodeInfo.result.display_name || null,
       geocode_lat: lat,
       geocode_lon: lon,
       requested_city: analysis.city || null,
       attempted_queries: geocodeInfo.attempted_queries || candidates,
-      current: parseWeatherSnapshot(data)
+      current: currentRes.ok ? parseWeatherSnapshot(currentData) : null,
+      forecast_days_requested: forecastDaysRequested,
+      forecast_days: forecastDays
     };
   } catch (error) {
     return {
