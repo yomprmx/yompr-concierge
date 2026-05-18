@@ -138,7 +138,7 @@ async function processChatRequest(body, env) {
       try {
         const recStart = Date.now();
         recommendationsInfo = await searchPlacesRecommendations(
-          { ...analysis, localDate },
+          { ...analysis, localDate, original_question: question },
           tripJson,
           env
         );
@@ -279,6 +279,7 @@ Recomendaciones:
 - Si opening_hours está disponible y la pregunta es para esta noche o hoy, menciona si está abierto.
 - Si el lugar trae bloque operational, úsalo para validar recomendación real:
   - Considera open_now, travel_from_hotel_walking_min, travel_from_hotel_driving_min y next_day_risk.
+  - Si next_day_risk.level = "unknown", NO menciones riesgo del día siguiente.
   - Si next_day_risk.level = "high", evita recomendar opciones lejanas o de logística pesada.
   - Prioriza opciones con menor tiempo desde hotel cuando el día siguiente sea exigente.
 - No menciones todos los campos de cada lugar; sé selectivo y natural.

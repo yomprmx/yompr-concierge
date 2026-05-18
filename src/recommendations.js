@@ -88,7 +88,12 @@ export async function searchPlacesRecommendations(analysis, tripJson, env) {
       maps_link: p.googleMapsUri || null
     }));
 
-    const nextDayRisk = detectNextDayRisk(tripJson, analysis.localDate);
+    const nextDayRisk = detectNextDayRisk(
+      tripJson,
+      analysis.localDate,
+      analysis.date_reference,
+      analysis.original_question
+    );
     const places = await validatePlacesOperationally(
       placesRaw,
       analysis,
@@ -119,7 +124,19 @@ function parseDateMaybe(value) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-function detectNextDayRisk(tripJson, localDate) {
+function hasExplicitTemporalReference(dateReference, originalQuestion) {
+  const ref = normalizeText(dateReference || "");
+  const q = normalizeText(originalQuestion || "");
+  if (ref) return true;
+  if (q.includes("hoy") || q.includes("mañana") || q.includes("manana")) return true;
+  if (q.includes("esta noche") || q.includes("hoy en la noche")) return true;
+  return false;
+}
+
+function detectNextDayRisk(tripJson, localDate, dateReference, originalQuestion) {
+  if (!hasExplicitTemporalReference(dateReference, originalQuestion)) {
+    return { level: "unknown", reason: "Sin referencia temporal explícita." };
+  }
   if (!localDate) return { level: "unknown", reason: null };
 
   const day = new Date(`${localDate}T00:00:00`);
