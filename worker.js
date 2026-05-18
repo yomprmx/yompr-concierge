@@ -296,7 +296,11 @@ Clima:
   - Para preguntas de "ahora"/"hoy": usa current.
   - Para preguntas de "mañana": usa forecast_days[1] si existe.
   - Para preguntas de "próximos días"/"esta semana": resume 2 a 3 días de forecast_days de forma compacta.
+  - Si forecast_hours existe, úsalo para sugerir ventanas horarias más favorables para salir (lluvia/temperatura), de forma informativa.
   - Incluye temperatura min/max y probabilidad de lluvia cuando esté disponible.
+- Tono obligatorio en clima: informativo y flexible, nunca imperativo.
+  - Usa frases como: "si quieren salir", "les conviene considerar", "una buena ventana podría ser".
+  - Evita frases mandatorias como: "deben", "tienen que", "no salgan".
 - Si context.weather_info.type = "weather_error", dilo de forma breve y ofrece volver a intentar con ciudad o zona más específica.
 - No inventes pronósticos por hora o por día si no están en context.weather_info.
 
@@ -421,6 +425,8 @@ No ofrezcas capacidades que no tienes, ni insinúes que podrías hacerlo más ad
       weather_current_temp_c: weatherInfo?.current?.temperature_c ?? null,
       weather_current_condition: weatherInfo?.current?.condition || null,
       weather_forecast_days: weatherInfo?.forecast_days?.length ?? null,
+      weather_forecast_hours: weatherInfo?.forecast_hours?.length ?? null,
+      weather_recommendation_windows: weatherInfo?.recommendation_windows?.length ?? null,
       weather_forecast_tomorrow_max_c: weatherInfo?.forecast_days?.[1]?.max_temp_c ?? null,
       weather_forecast_tomorrow_min_c: weatherInfo?.forecast_days?.[1]?.min_temp_c ?? null,
       weather_forecast_tomorrow_rain_prob: weatherInfo?.forecast_days?.[1]?.precipitation_probability_percent ?? null,
@@ -683,7 +689,7 @@ export default {
         const driving = log.driving_duration_min != null ? `${log.driving_duration_min}min / ${log.driving_distance_km}km` : "—";
         const transit = log.transit_duration_min != null ? `${log.transit_duration_min}min / ${log.transit_distance_km}km` : "—";
         const weatherStatus = log.weather_used
-          ? `✅ ${escapeHtml(log.weather_type || "weather")}<br><small style="color:#555;">${escapeHtml(log.weather_source || "—")}</small>`
+          ? `✅ ${escapeHtml(log.weather_type || "weather")}<br><small style="color:#555;">${escapeHtml(log.weather_source || "—")}</small><br><small style="color:#0a6;">horas: ${escapeHtml(String(log.weather_forecast_hours ?? "—"))} | ventanas: ${escapeHtml(String(log.weather_recommendation_windows ?? "—"))}</small>`
           : "—";
         const weatherNow = log.weather_current_temp_c != null
           ? `${log.weather_current_temp_c}°C${log.weather_current_condition ? ` • ${escapeHtml(log.weather_current_condition)}` : ""}`

@@ -116,6 +116,38 @@ function resolveForecastDaysByQuestion(analysis) {
   return 3;
 }
 
+function resolveForecastHoursByQuestion(analysis) {
+  const q = normalizeText(analysis.original_question || "");
+  if (q.includes("hora") || q.includes("horario") || q.includes("tarde") || q.includes("noche") || q.includes("salir")) return 18;
+  return 12;
+}
+
+function parseHourItem(item) {
+  if (!item || typeof item !== "object") return null;
+  return {
+    time: item.interval?.startTime || item.time || null,
+    temperature_c: item.temperature?.degrees ?? null,
+    feels_like_c: item.feelsLikeTemperature?.degrees ?? null,
+    precipitation_probability_percent: item.precipitation?.probability?.percent ?? null,
+    condition: item.weatherCondition?.description?.text || item.weatherCondition?.type || null
+  };
+}
+
+function buildSoftRecommendationWindows(hourly) {
+  if (!Array.isArray(hourly) || !hourly.length) return [];
+  const candidates = hourly
+    .filter(h => h && typeof h.precipitation_probability_percent === "number")
+    .sort((a, b) => (a.precipitation_probability_percent - b.precipitation_probability_percent) || ((a.temperature_c ?? 99) - (b.temperature_c ?? 99)))
+    .slice(0, 3)
+    .map(h => ({
+      time: h.time,
+      reason: `menor probabilidad de lluvia (${h.precipitation_probability_percent}%)`,
+      temperature_c: h.temperature_c ?? null,
+      condition: h.condition || null
+    }));
+  return candidates;
+}
+
 export async function enrichWithWeatherInfo(tripJson, analysis, env = null) {
   if (analysis.tool_needed !== "weather" && analysis.intent !== "weather") return null;
   if (!env?.GOOGLE_MAPS_KEY) {
@@ -158,21 +190,24 @@ export async function enrichWithWeatherInfo(tripJson, analysis, env = null) {
     languageCode: "es"
   });
   const forecastDaysRequested = resolveForecastDaysByQuestion(analysis);
+  const forecastHoursRequested = resolveForecastHoursByQuestion(analysis);
 
   try {
-    const [currentRes, forecastRes] = await Promise.all([
+    const [currentRes, forecastRes, hourlyRes] = await Promise.all([
       fetch(`https://weather.googleapis.com/v1/currentConditions:lookup?${params.toString()}`),
-      fetch(`https://weather.googleapis.com/v1/forecast/days:lookup?${params.toString()}&days=${forecastDaysRequested}`)
+      fetch(`https://weather.googleapis.com/v1/forecast/days:lookup?${params.toString()}&days=${forecastDaysRequested}`),
+      fetch(`https://weather.googleapis.com/v1/forecast/hours:lookup?${params.toString()}&hours=${forecastHoursRequested}`)
     ]);
 
     const currentData = await currentRes.json();
     const forecastData = await forecastRes.json();
+    const hourlyData = await hourlyRes.json();
 
-    if (!currentRes.ok && !forecastRes.ok) {
+    if (!currentRes.ok && !forecastRes.ok && !hourlyRes.ok) {
       return {
         type: "weather_error",
-        error: `Weather API error: current=${currentRes.status}, forecast=${forecastRes.status}`,
-        details: currentData?.error?.message || forecastData?.error?.message || null,
+        error: `Weather API error: current=${currentRes.status}, forecast=${forecastRes.status}, hourly=${hourlyRes.status}`,
+        details: currentData?.error?.message || forecastData?.error?.message || hourlyData?.error?.message || null,
         geocode_location: geocodeInfo.result.display_name || null
       };
     }
@@ -180,6 +215,10 @@ export async function enrichWithWeatherInfo(tripJson, analysis, env = null) {
     const forecastDays = Array.isArray(forecastData?.forecastDays)
       ? forecastData.forecastDays.map(parseForecastDay).filter(Boolean)
       : [];
+    const forecastHours = Array.isArray(hourlyData?.forecastHours)
+      ? hourlyData.forecastHours.map(parseHourItem).filter(Boolean)
+      : [];
+    const recommendationWindows = buildSoftRecommendationWindows(forecastHours);
 
     return {
       type: "weather_bundle",
@@ -191,7 +230,10 @@ export async function enrichWithWeatherInfo(tripJson, analysis, env = null) {
       attempted_queries: geocodeInfo.attempted_queries || candidates,
       current: currentRes.ok ? parseWeatherSnapshot(currentData) : null,
       forecast_days_requested: forecastDaysRequested,
-      forecast_days: forecastDays
+      forecast_days: forecastDays,
+      forecast_hours_requested: forecastHoursRequested,
+      forecast_hours: forecastHours,
+      recommendation_windows: recommendationWindows
     };
   } catch (error) {
     return {

@@ -52,6 +52,8 @@ export async function saveChatLog(env, log) {
       weather_current_temp_c: log.weather_current_temp_c ?? null,
       weather_current_condition: log.weather_current_condition || null,
       weather_forecast_days: log.weather_forecast_days ?? null,
+      weather_forecast_hours: log.weather_forecast_hours ?? null,
+      weather_recommendation_windows: log.weather_recommendation_windows ?? null,
       weather_forecast_tomorrow_max_c: log.weather_forecast_tomorrow_max_c ?? null,
       weather_forecast_tomorrow_min_c: log.weather_forecast_tomorrow_min_c ?? null,
       weather_forecast_tomorrow_rain_prob: log.weather_forecast_tomorrow_rain_prob ?? null,
