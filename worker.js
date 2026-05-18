@@ -47,6 +47,7 @@ function renderInitialMessages(messages) {
 }
 
 async function processChatRequest(body, env) {
+  const t0 = Date.now();
   let tripId = body.tripId || "unknown";
   let question = body.question || "";
 
@@ -65,12 +66,14 @@ async function processChatRequest(body, env) {
 
     const tripJson = JSON.parse(tripText);
 
+    const classifierStart = Date.now();
     let analysis = await classifyIntentWithDeepSeek(
       question,
       env,
       tripJson,
       conversationHistory
     );
+    const classifierMs = Date.now() - classifierStart;
 
     if (analysis.needs_clarification) {
       const clarificationAnswer =
@@ -109,9 +112,12 @@ async function processChatRequest(body, env) {
     let transportInfo = null;
     let transportUsed = false;
     let transportError = null;
+    let routeMs = null;
 
     try {
+      const routeStart = Date.now();
       transportInfo = await enrichWithTransportInfo(tripJson, analysis, env);
+      routeMs = Date.now() - routeStart;
 
       if (transportInfo) {
         context.transport_info = transportInfo;
@@ -125,10 +131,14 @@ async function processChatRequest(body, env) {
     let recommendationsInfo = null;
     let recommendationsUsed = false;
     let weatherInfo = null;
+    let recommendationsMs = null;
+    let weatherMs = null;
 
     if (intent === "recommendation" && analysis.recommendation_query) {
       try {
+        const recStart = Date.now();
         recommendationsInfo = await searchPlacesRecommendations(analysis, tripJson, env);
+        recommendationsMs = Date.now() - recStart;
         if (recommendationsInfo?.places?.length) {
           context.recommendations_results = recommendationsInfo.places;
           recommendationsUsed = true;
@@ -138,12 +148,14 @@ async function processChatRequest(body, env) {
       }
     }
 
-    if (intent === "weather" || analysis.tool_needed === "weather") {
+    if (intent === "weather" || analysis.tool_needed === "weather" || intent === "recommendation") {
+      const weatherStart = Date.now();
       weatherInfo = await enrichWithWeatherInfo(
         tripJson,
         { ...analysis, original_question: question },
         env
       );
+      weatherMs = Date.now() - weatherStart;
       if (weatherInfo) context.weather_info = weatherInfo;
     }
 
@@ -180,6 +192,7 @@ async function processChatRequest(body, env) {
           .slice(-8)
       : [];
 
+    const llmStart = Date.now();
     const response = await fetch("https://api.deepseek.com/chat/completions", {
       method: "POST",
       headers: {
@@ -262,6 +275,10 @@ Recomendaciones:
 - No menciones todos los campos de cada lugar; sé selectivo y natural.
 - Si recommendations_results está vacío o no existe pero el intent es recommendation, di que no encontraste lugares con datos concretos en la zona y recomienda buscar en Google Maps con el tipo de lugar + barrio del hotel.
 - NUNCA inventes nombres de restaurantes, bares, museos u otros lugares que no estén en context.recommendations_results.
+- Si context.weather_info está disponible, adapta recomendaciones al clima:
+  - Si lluvia probable >= 50% o mal clima, prioriza lugares interiores/cubiertos.
+  - Si clima agradable, puedes priorizar terrazas o opciones caminables.
+  - Explica brevemente por qué la recomendación conviene para ese clima.
 
 Clima:
 - Si context.weather_info existe, úsalo como fuente prioritaria para responder clima.
@@ -325,6 +342,7 @@ No ofrezcas capacidades que no tienes, ni insinúes que podrías hacerlo más ad
     });
 
     const data = await response.json();
+    const llmMs = Date.now() - llmStart;
 
     if (!response.ok) {
       return {
@@ -395,6 +413,21 @@ No ofrezcas capacidades que no tienes, ni insinúes que podrías hacerlo más ad
       weather_forecast_tomorrow_min_c: weatherInfo?.forecast_days?.[1]?.min_temp_c ?? null,
       weather_forecast_tomorrow_rain_prob: weatherInfo?.forecast_days?.[1]?.precipitation_probability_percent ?? null,
       weather_error: weatherInfo?.error || weatherInfo?.details || null,
+      latency_total_ms: Date.now() - t0,
+      latency_classifier_ms: classifierMs,
+      latency_route_ms: routeMs,
+      latency_recommendations_ms: recommendationsMs,
+      latency_weather_ms: weatherMs,
+      latency_llm_ms: llmMs,
+      tool_route_status: transportInfo
+        ? (transportInfo.type === "calculated_route" ? "ok" : transportInfo.type)
+        : (analysis.intent === "route" || analysis.tool_needed === "route" ? "none" : null),
+      tool_recommendations_status: recommendationsInfo
+        ? (recommendationsUsed ? "ok" : (recommendationsInfo.error ? "error" : "empty"))
+        : (intent === "recommendation" ? "none" : null),
+      tool_weather_status: weatherInfo
+        ? (weatherInfo.type === "weather_error" ? "error" : "ok")
+        : ((intent === "weather" || intent === "recommendation") ? "none" : null),
       used_transport_in_answer:
         answer.includes("estimado") ||
         answer.includes("Google Maps") ||
@@ -647,6 +680,8 @@ export default {
           log.weather_forecast_tomorrow_max_c != null || log.weather_forecast_tomorrow_min_c != null
             ? `${log.weather_forecast_tomorrow_min_c ?? "—"}° / ${log.weather_forecast_tomorrow_max_c ?? "—"}°${log.weather_forecast_tomorrow_rain_prob != null ? ` • lluvia ${log.weather_forecast_tomorrow_rain_prob}%` : ""}`
             : "—";
+        const obs = `total ${log.latency_total_ms ?? "—"}ms | cls ${log.latency_classifier_ms ?? "—"} | llm ${log.latency_llm_ms ?? "—"} | route ${log.latency_route_ms ?? "—"} | rec ${log.latency_recommendations_ms ?? "—"} | weather ${log.latency_weather_ms ?? "—"}`;
+        const toolStatus = `route:${escapeHtml(log.tool_route_status || "—")} | rec:${escapeHtml(log.tool_recommendations_status || "—")} | weather:${escapeHtml(log.tool_weather_status || "—")}`;
         return `
   <tr${rowStyle}>
     <td>${escapeHtml(log.created_at || "")}</td>
@@ -677,6 +712,8 @@ export default {
     <td style="max-width:180px; white-space:pre-wrap; font-size:11px;">${weatherNow}</td>
     <td style="max-width:220px; white-space:pre-wrap; font-size:11px;">${weatherTomorrow}<br><small style="color:#555;">días consultados: ${escapeHtml(String(log.weather_forecast_days ?? "—"))}</small></td>
     <td style="color:#c00; max-width:180px; white-space:pre-wrap; font-size:11px;">${escapeHtml(log.weather_error || "")}</td>
+    <td style="max-width:260px; white-space:pre-wrap; font-size:11px;">${escapeHtml(obs)}</td>
+    <td style="max-width:240px; white-space:pre-wrap; font-size:11px;">${toolStatus}</td>
     <td style="max-width: 260px; white-space: pre-wrap;">${escapeHtml(log.question || "")}</td>
     <td style="max-width: 480px; white-space: pre-wrap;">${escapeHtml(log.answer || "")}</td>
   </tr>`;
@@ -737,6 +774,8 @@ export default {
         <th>🌡️ Clima actual</th>
         <th>📅 Mañana</th>
         <th>⚠️ Error clima</th>
+        <th>⏱️ Latencias</th>
+        <th>🧪 Tools status</th>
         <th>Pregunta</th>
         <th>Respuesta</th>
       </tr>
