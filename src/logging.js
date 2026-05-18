@@ -43,6 +43,8 @@ export async function saveChatLog(env, log) {
       recommendations_count: log.recommendations_count ?? null,
       recommendations_bias_used: log.recommendations_bias_used || false,
       recommendations_error: log.recommendations_error || null,
+      recommendations_operational_validated: log.recommendations_operational_validated ?? null,
+      recommendations_next_day_risk: log.recommendations_next_day_risk || null,
       weather_used: log.weather_used || false,
       weather_type: log.weather_type || null,
       weather_source: log.weather_source || null,

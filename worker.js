@@ -137,10 +137,15 @@ async function processChatRequest(body, env) {
     if (intent === "recommendation" && analysis.recommendation_query) {
       try {
         const recStart = Date.now();
-        recommendationsInfo = await searchPlacesRecommendations(analysis, tripJson, env);
+        recommendationsInfo = await searchPlacesRecommendations(
+          { ...analysis, localDate },
+          tripJson,
+          env
+        );
         recommendationsMs = Date.now() - recStart;
         if (recommendationsInfo?.places?.length) {
           context.recommendations_results = recommendationsInfo.places;
+          context.recommendations_operational = recommendationsInfo.operational_validation || null;
           recommendationsUsed = true;
         }
       } catch (e) {
@@ -272,6 +277,10 @@ Recomendaciones:
 - Elige 2 o 3 opciones de la lista. Prioriza las que tengan mejor rating y más reseñas. Si el usuario pidió precio bajo, filtra por price_level económico primero.
 - Para cada lugar recomendado incluye: nombre, descripción breve (usa el campo description si existe, si no describe el tipo brevemente), rating (ej: 4.5 ⭐ con X reseñas), precio si está disponible, horario relevante si aplica, y el maps_link como enlace clickeable.
 - Si opening_hours está disponible y la pregunta es para esta noche o hoy, menciona si está abierto.
+- Si el lugar trae bloque operational, úsalo para validar recomendación real:
+  - Considera open_now, travel_from_hotel_walking_min, travel_from_hotel_driving_min y next_day_risk.
+  - Si next_day_risk.level = "high", evita recomendar opciones lejanas o de logística pesada.
+  - Prioriza opciones con menor tiempo desde hotel cuando el día siguiente sea exigente.
 - No menciones todos los campos de cada lugar; sé selectivo y natural.
 - Si recommendations_results está vacío o no existe pero el intent es recommendation, di que no encontraste lugares con datos concretos en la zona y recomienda buscar en Google Maps con el tipo de lugar + barrio del hotel.
 - NUNCA inventes nombres de restaurantes, bares, museos u otros lugares que no estén en context.recommendations_results.
@@ -402,6 +411,8 @@ No ofrezcas capacidades que no tienes, ni insinúes que podrías hacerlo más ad
       recommendations_count: recommendationsInfo?.places?.length ?? null,
       recommendations_bias_used: recommendationsInfo?.bias_used || false,
       recommendations_error: recommendationsInfo?.error || null,
+      recommendations_operational_validated: recommendationsInfo?.places?.filter(p => p?.operational?.validated).length ?? null,
+      recommendations_next_day_risk: recommendationsInfo?.operational_validation?.next_day_risk?.level || null,
       weather_used: Boolean(weatherInfo),
       weather_type: weatherInfo?.type || null,
       weather_source: weatherInfo?.source || null,
@@ -707,7 +718,7 @@ export default {
     <td style="max-width: 260px; white-space: pre-wrap; font-size:11px; color:#555;">${escapeHtml(log.geocode_destination_attempted_query || "")}</td>
     <td style="color:#c00; max-width:160px; white-space:pre-wrap;">${escapeHtml(log.geocode_origin_error || "")}</td>
     <td style="color:#c00; max-width:160px; white-space:pre-wrap;">${escapeHtml(log.geocode_destination_error || "")}</td>
-    <td style="max-width:200px; white-space:pre-wrap; font-size:11px;">${log.recommendations_used ? `✅ ${log.recommendations_count} resultados<br><small style="color:#555;">${escapeHtml(log.recommendations_query || "")}</small>${log.recommendations_bias_used ? "<br><small style='color:#22a;'>📍 bias hotel</small>" : ""}` : (log.intent === "recommendation" ? `<span style="color:#c00;">Sin resultados<br><small>${escapeHtml(log.recommendations_error || "")}</small></span>` : "—")}</td>
+    <td style="max-width:220px; white-space:pre-wrap; font-size:11px;">${log.recommendations_used ? `✅ ${log.recommendations_count} resultados<br><small style="color:#555;">${escapeHtml(log.recommendations_query || "")}</small>${log.recommendations_bias_used ? "<br><small style='color:#22a;'>📍 bias hotel</small>" : ""}<br><small style="color:#0a6;">ops validadas: ${escapeHtml(String(log.recommendations_operational_validated ?? "—"))}</small><br><small style="color:#555;">riesgo mañana: ${escapeHtml(log.recommendations_next_day_risk || "—")}</small>` : (log.intent === "recommendation" ? `<span style="color:#c00;">Sin resultados<br><small>${escapeHtml(log.recommendations_error || "")}</small></span>` : "—")}</td>
     <td style="max-width:180px; white-space:pre-wrap; font-size:11px;">${weatherStatus}</td>
     <td style="max-width:180px; white-space:pre-wrap; font-size:11px;">${weatherNow}</td>
     <td style="max-width:220px; white-space:pre-wrap; font-size:11px;">${weatherTomorrow}<br><small style="color:#555;">días consultados: ${escapeHtml(String(log.weather_forecast_days ?? "—"))}</small></td>

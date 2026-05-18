@@ -15,6 +15,8 @@ export async function searchPlacesRecommendations(analysis, tripJson, env) {
   if (!query) return null;
 
   let locationBias = null;
+  let hotelAnchor = null;
+  let hotelAnchorGeo = null;
   const city = analysis.city ? normalizeText(analysis.city) : null;
 
   if (city) {
@@ -26,12 +28,16 @@ export async function searchPlacesRecommendations(analysis, tripJson, env) {
     );
 
     if (cityHotel) {
+      hotelAnchor = {
+        name: cityHotel.accommodationName || cityHotel.hotelName || cityHotel.name || null,
+        address: cityHotel.accommodationAddress || cityHotel.address || null
+      };
       const hotelQuery = [cityHotel.accommodationName, cityHotel.accommodationAddress].filter(Boolean).join(", ");
       if (hotelQuery) {
         try {
-          const hotelGeo = await geocode(hotelQuery, { city: analysis.city }, env);
-          if (hotelGeo?.lat && hotelGeo?.lon) {
-            locationBias = { circle: { center: { latitude: hotelGeo.lat, longitude: hotelGeo.lon }, radius: 2000 } };
+          hotelAnchorGeo = await geocode(hotelQuery, { city: analysis.city }, env);
+          if (hotelAnchorGeo?.lat && hotelAnchorGeo?.lon) {
+            locationBias = { circle: { center: { latitude: hotelAnchorGeo.lat, longitude: hotelAnchorGeo.lon }, radius: 2000 } };
           }
         } catch (_) {}
       }
@@ -54,6 +60,7 @@ export async function searchPlacesRecommendations(analysis, tripJson, env) {
           "places.priceLevel",
           "places.editorialSummary",
           "places.regularOpeningHours",
+          "places.currentOpeningHours",
           "places.googleMapsUri",
           "places.primaryType"
         ].join(",")
@@ -68,7 +75,7 @@ export async function searchPlacesRecommendations(analysis, tripJson, env) {
 
     const data = await res.json();
     if (!data.places?.length) return { places: [], query, bias_used: Boolean(locationBias), error: null };
-    const places = data.places.slice(0, 6).map(p => ({
+    const placesRaw = data.places.slice(0, 6).map(p => ({
       name: p.displayName?.text || null,
       address: p.formattedAddress || null,
       rating: p.rating ? Math.round(p.rating * 10) / 10 : null,
@@ -76,11 +83,156 @@ export async function searchPlacesRecommendations(analysis, tripJson, env) {
       price_level: PRICE_LEVEL_MAP[p.priceLevel] || null,
       description: p.editorialSummary?.text || null,
       type: p.primaryType || null,
-      opening_hours: p.regularOpeningHours?.weekdayDescriptions || null,
+      opening_hours: p.regularOpeningHours?.weekdayDescriptions || p.currentOpeningHours?.weekdayDescriptions || null,
+      open_now: typeof p.currentOpeningHours?.openNow === "boolean" ? p.currentOpeningHours.openNow : null,
       maps_link: p.googleMapsUri || null
     }));
-    return { places, query, bias_used: Boolean(locationBias), error: null };
+
+    const nextDayRisk = detectNextDayRisk(tripJson, analysis.localDate);
+    const places = await validatePlacesOperationally(
+      placesRaw,
+      analysis,
+      env,
+      hotelAnchor,
+      hotelAnchorGeo,
+      nextDayRisk
+    );
+
+    return {
+      places,
+      query,
+      bias_used: Boolean(locationBias),
+      error: null,
+      operational_validation: {
+        hotel_anchor: hotelAnchor || null,
+        next_day_risk: nextDayRisk
+      }
+    };
   } catch (e) {
     return { places: [], query, bias_used: Boolean(locationBias), error: String(e) };
   }
+}
+
+function parseDateMaybe(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function detectNextDayRisk(tripJson, localDate) {
+  if (!localDate) return { level: "unknown", reason: null };
+
+  const day = new Date(`${localDate}T00:00:00`);
+  if (Number.isNaN(day.getTime())) return { level: "unknown", reason: null };
+  const nextDayStart = new Date(day);
+  nextDayStart.setDate(nextDayStart.getDate() + 1);
+  const nextDayEnd = new Date(nextDayStart);
+  nextDayEnd.setDate(nextDayEnd.getDate() + 1);
+
+  let hasEarlyFlight = false;
+  let hasEarlyTransferOrActivity = false;
+
+  for (const reservation of tripJson.flightReservations || []) {
+    for (const segment of reservation.segments || []) {
+      const dep = parseDateMaybe(segment.departureDateTime || segment.departureDate);
+      if (!dep) continue;
+      if (dep >= nextDayStart && dep < nextDayEnd && dep.getHours() < 10) hasEarlyFlight = true;
+    }
+  }
+
+  for (const service of tripJson.serviceBookings || []) {
+    if (service.category === "transfer" && service.transfer) {
+      const dateOnly = String(service.transfer.date || "").split("T")[0];
+      const time = service.transfer.pickupTime || "00:00";
+      const dt = parseDateMaybe(`${dateOnly}T${time}:00`);
+      if (dt && dt >= nextDayStart && dt < nextDayEnd && dt.getHours() < 10) hasEarlyTransferOrActivity = true;
+    }
+    if (service.category === "activity" && service.activity) {
+      const dateOnly = String(service.activity.date || "").split("T")[0];
+      const time = service.activity.time || "00:00";
+      const dt = parseDateMaybe(`${dateOnly}T${time}:00`);
+      if (dt && dt >= nextDayStart && dt < nextDayEnd && dt.getHours() < 10) hasEarlyTransferOrActivity = true;
+    }
+  }
+
+  if (hasEarlyFlight) return { level: "high", reason: "Hay vuelo temprano al día siguiente." };
+  if (hasEarlyTransferOrActivity) return { level: "medium", reason: "Hay actividad o traslado temprano al día siguiente." };
+  return { level: "low", reason: "No hay eventos tempranos detectados al día siguiente." };
+}
+
+async function getRouteMinutes(from, to, mode, env) {
+  try {
+    const modeMap = { driving: "DRIVE", walking: "WALK" };
+    const res = await fetch("https://routes.googleapis.com/directions/v2:computeRoutes", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": env?.GOOGLE_MAPS_KEY || "",
+        "X-Goog-FieldMask": "routes.duration"
+      },
+      body: JSON.stringify({
+        origin: { location: { latLng: { latitude: from.lat, longitude: from.lon } } },
+        destination: { location: { latLng: { latitude: to.lat, longitude: to.lon } } },
+        travelMode: modeMap[mode] || "DRIVE"
+      })
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const seconds = parseInt(data?.routes?.[0]?.duration) || 0;
+    if (!seconds) return null;
+    return Math.round(seconds / 60);
+  } catch (_) {
+    return null;
+  }
+}
+
+async function validatePlacesOperationally(places, analysis, env, hotelAnchor, hotelAnchorGeo, nextDayRisk) {
+  if (!Array.isArray(places) || !places.length) return [];
+  if (!hotelAnchorGeo?.lat || !hotelAnchorGeo?.lon) {
+    return places.map(p => ({
+      ...p,
+      operational: {
+        validated: false,
+        open_now: p.open_now,
+        travel_from_hotel_walking_min: null,
+        travel_from_hotel_driving_min: null,
+        next_day_risk: nextDayRisk
+      }
+    }));
+  }
+
+  const enriched = [];
+  for (const place of places) {
+    let placeGeo = null;
+    try {
+      const query = [place.name, place.address, analysis.city].filter(Boolean).join(", ");
+      placeGeo = await geocode(query, { city: analysis.city }, env);
+    } catch (_) {}
+
+    const walkingMin = placeGeo ? await getRouteMinutes(hotelAnchorGeo, placeGeo, "walking", env) : null;
+    const drivingMin = placeGeo ? await getRouteMinutes(hotelAnchorGeo, placeGeo, "driving", env) : null;
+
+    const score =
+      (place.rating || 0) * 10 +
+      Math.min((place.review_count || 0) / 100, 20) +
+      (place.open_now === true ? 10 : 0) -
+      (walkingMin != null ? Math.min(walkingMin / 3, 12) : 6) -
+      (nextDayRisk.level === "high" && walkingMin != null && walkingMin > 25 ? 8 : 0);
+
+    enriched.push({
+      ...place,
+      operational: {
+        validated: true,
+        hotel_anchor_name: hotelAnchor?.name || null,
+        open_now: place.open_now,
+        travel_from_hotel_walking_min: walkingMin,
+        travel_from_hotel_driving_min: drivingMin,
+        next_day_risk: nextDayRisk,
+        score: Math.round(score * 10) / 10
+      }
+    });
+  }
+
+  enriched.sort((a, b) => (b.operational?.score || 0) - (a.operational?.score || 0));
+  return enriched;
 }
