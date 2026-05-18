@@ -384,6 +384,17 @@ No ofrezcas capacidades que no tienes, ni insinúes que podrías hacerlo más ad
       recommendations_count: recommendationsInfo?.places?.length ?? null,
       recommendations_bias_used: recommendationsInfo?.bias_used || false,
       recommendations_error: recommendationsInfo?.error || null,
+      weather_used: Boolean(weatherInfo),
+      weather_type: weatherInfo?.type || null,
+      weather_source: weatherInfo?.source || null,
+      weather_location: weatherInfo?.geocode_location || null,
+      weather_current_temp_c: weatherInfo?.current?.temperature_c ?? null,
+      weather_current_condition: weatherInfo?.current?.condition || null,
+      weather_forecast_days: weatherInfo?.forecast_days?.length ?? null,
+      weather_forecast_tomorrow_max_c: weatherInfo?.forecast_days?.[1]?.max_temp_c ?? null,
+      weather_forecast_tomorrow_min_c: weatherInfo?.forecast_days?.[1]?.min_temp_c ?? null,
+      weather_forecast_tomorrow_rain_prob: weatherInfo?.forecast_days?.[1]?.precipitation_probability_percent ?? null,
+      weather_error: weatherInfo?.error || weatherInfo?.details || null,
       used_transport_in_answer:
         answer.includes("estimado") ||
         answer.includes("Google Maps") ||
@@ -626,6 +637,16 @@ export default {
         const walking = log.walking_duration_min != null ? `${log.walking_duration_min}min / ${log.walking_distance_km}km` : "—";
         const driving = log.driving_duration_min != null ? `${log.driving_duration_min}min / ${log.driving_distance_km}km` : "—";
         const transit = log.transit_duration_min != null ? `${log.transit_duration_min}min / ${log.transit_distance_km}km` : "—";
+        const weatherStatus = log.weather_used
+          ? `✅ ${escapeHtml(log.weather_type || "weather")}<br><small style="color:#555;">${escapeHtml(log.weather_source || "—")}</small>`
+          : "—";
+        const weatherNow = log.weather_current_temp_c != null
+          ? `${log.weather_current_temp_c}°C${log.weather_current_condition ? ` • ${escapeHtml(log.weather_current_condition)}` : ""}`
+          : "—";
+        const weatherTomorrow =
+          log.weather_forecast_tomorrow_max_c != null || log.weather_forecast_tomorrow_min_c != null
+            ? `${log.weather_forecast_tomorrow_min_c ?? "—"}° / ${log.weather_forecast_tomorrow_max_c ?? "—"}°${log.weather_forecast_tomorrow_rain_prob != null ? ` • lluvia ${log.weather_forecast_tomorrow_rain_prob}%` : ""}`
+            : "—";
         return `
   <tr${rowStyle}>
     <td>${escapeHtml(log.created_at || "")}</td>
@@ -652,6 +673,10 @@ export default {
     <td style="color:#c00; max-width:160px; white-space:pre-wrap;">${escapeHtml(log.geocode_origin_error || "")}</td>
     <td style="color:#c00; max-width:160px; white-space:pre-wrap;">${escapeHtml(log.geocode_destination_error || "")}</td>
     <td style="max-width:200px; white-space:pre-wrap; font-size:11px;">${log.recommendations_used ? `✅ ${log.recommendations_count} resultados<br><small style="color:#555;">${escapeHtml(log.recommendations_query || "")}</small>${log.recommendations_bias_used ? "<br><small style='color:#22a;'>📍 bias hotel</small>" : ""}` : (log.intent === "recommendation" ? `<span style="color:#c00;">Sin resultados<br><small>${escapeHtml(log.recommendations_error || "")}</small></span>` : "—")}</td>
+    <td style="max-width:180px; white-space:pre-wrap; font-size:11px;">${weatherStatus}</td>
+    <td style="max-width:180px; white-space:pre-wrap; font-size:11px;">${weatherNow}</td>
+    <td style="max-width:220px; white-space:pre-wrap; font-size:11px;">${weatherTomorrow}<br><small style="color:#555;">días consultados: ${escapeHtml(String(log.weather_forecast_days ?? "—"))}</small></td>
+    <td style="color:#c00; max-width:180px; white-space:pre-wrap; font-size:11px;">${escapeHtml(log.weather_error || "")}</td>
     <td style="max-width: 260px; white-space: pre-wrap;">${escapeHtml(log.question || "")}</td>
     <td style="max-width: 480px; white-space: pre-wrap;">${escapeHtml(log.answer || "")}</td>
   </tr>`;
@@ -708,6 +733,10 @@ export default {
         <th>Error geocode origen</th>
         <th>Error geocode destino</th>
         <th>🏪 Recomendaciones</th>
+        <th>🌤️ Weather</th>
+        <th>🌡️ Clima actual</th>
+        <th>📅 Mañana</th>
+        <th>⚠️ Error clima</th>
         <th>Pregunta</th>
         <th>Respuesta</th>
       </tr>
