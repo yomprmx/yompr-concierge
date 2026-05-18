@@ -756,6 +756,13 @@ export default {
 <body>
   <h1>Yompr Concierge Logs</h1>
   <p>Últimas 200 preguntas registradas.</p>
+  <p>
+    <a
+      href="/admin/logs.txt?key=${encodeURIComponent(password)}"
+      download="yompr-concierge-logs.txt"
+      style="display:inline-block; padding:8px 12px; background:#111827; color:#fff; text-decoration:none; border-radius:6px; font-size:12px;"
+    >Descargar TXT</a>
+  </p>
   <div class="legend">
     <span style="background:#fff3cd;"></span> Advertencia (error de geocoding/ruta) &nbsp;
     <span style="background:#fde8e8;"></span> Error crítico
@@ -805,6 +812,54 @@ export default {
 </body>
 </html>
 `, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
+    }
+
+    if (url.pathname === "/admin/logs.txt") {
+      const password = url.searchParams.get("key");
+      if (password !== "Rigo090490!") {
+        return new Response("No autorizado", { status: 401 });
+      }
+
+      const list = await env.CHAT_LOGS.list({ limit: 200 });
+      const logs = [];
+      for (const key of list.keys) {
+        const value = await env.CHAT_LOGS.get(key.name);
+        if (value) logs.push(JSON.parse(value));
+      }
+      logs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+      const lines = [];
+      lines.push("Yompr Concierge Logs");
+      lines.push(`Generado: ${new Date().toISOString()}`);
+      lines.push(`Total registros: ${logs.length}`);
+      lines.push("");
+
+      for (const log of logs) {
+        lines.push("------------------------------------------------------------");
+        lines.push(`Fecha: ${log.created_at || ""}`);
+        lines.push(`Trip ID: ${log.trip_id || ""}`);
+        lines.push(`Intent: ${log.intent || ""}`);
+        lines.push(`Scope: ${log.scope || ""}`);
+        lines.push(`City: ${log.city || ""}`);
+        lines.push(`Pregunta: ${log.question || ""}`);
+        lines.push(`Respuesta: ${log.answer || ""}`);
+        lines.push(`Route status: ${log.tool_route_status || ""}`);
+        lines.push(`Recommendations status: ${log.tool_recommendations_status || ""}`);
+        lines.push(`Weather status: ${log.tool_weather_status || ""}`);
+        lines.push(`Clima ubicación: ${log.weather_location || ""}`);
+        lines.push(`Clima actual: ${log.weather_current_temp_c ?? ""}C ${log.weather_current_condition || ""}`);
+        lines.push(`Mañana: ${log.weather_forecast_tomorrow_min_c ?? ""}/${log.weather_forecast_tomorrow_max_c ?? ""}C lluvia ${log.weather_forecast_tomorrow_rain_prob ?? ""}%`);
+        lines.push(`Error clima: ${log.weather_error || ""}`);
+        lines.push(`Latencias(ms): total=${log.latency_total_ms ?? ""}, cls=${log.latency_classifier_ms ?? ""}, llm=${log.latency_llm_ms ?? ""}, route=${log.latency_route_ms ?? ""}, rec=${log.latency_recommendations_ms ?? ""}, weather=${log.latency_weather_ms ?? ""}`);
+        lines.push("");
+      }
+
+      return new Response(lines.join("\n"), {
+        headers: {
+          "Content-Type": "text/plain; charset=UTF-8",
+          "Content-Disposition": 'attachment; filename="yompr-concierge-logs.txt"'
+        }
+      });
     }
 
     if (url.pathname === "/admin") {
