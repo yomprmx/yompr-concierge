@@ -46,6 +46,11 @@ function renderInitialMessages(messages) {
   `).join("");
 }
 
+function csvValue(value) {
+  const text = String(value ?? "");
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
 async function processChatRequest(body, env) {
   const t0 = Date.now();
   let tripId = body.tripId || "unknown";
@@ -762,6 +767,11 @@ export default {
       download="yompr-concierge-logs.txt"
       style="display:inline-block; padding:8px 12px; background:#111827; color:#fff; text-decoration:none; border-radius:6px; font-size:12px;"
     >Descargar TXT</a>
+    <a
+      href="/admin/logs.csv?key=${encodeURIComponent(password)}"
+      download="yompr-concierge-logs.csv"
+      style="display:inline-block; margin-left:8px; padding:8px 12px; background:#2563eb; color:#fff; text-decoration:none; border-radius:6px; font-size:12px;"
+    >Descargar CSV</a>
   </p>
   <div class="legend">
     <span style="background:#fff3cd;"></span> Advertencia (error de geocoding/ruta) &nbsp;
@@ -858,6 +868,52 @@ export default {
         headers: {
           "Content-Type": "text/plain; charset=UTF-8",
           "Content-Disposition": 'attachment; filename="yompr-concierge-logs.txt"'
+        }
+      });
+    }
+
+    if (url.pathname === "/admin/logs.csv") {
+      const password = url.searchParams.get("key");
+      if (password !== "Rigo090490!") {
+        return new Response("No autorizado", { status: 401 });
+      }
+
+      const list = await env.CHAT_LOGS.list({ limit: 200 });
+      const logs = [];
+      for (const key of list.keys) {
+        const value = await env.CHAT_LOGS.get(key.name);
+        if (value) logs.push(JSON.parse(value));
+      }
+      logs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+      const headers = [
+        "created_at", "trip_id", "intent", "scope", "city",
+        "question", "answer",
+        "tool_route_status", "tool_recommendations_status", "tool_weather_status",
+        "weather_location", "weather_current_temp_c", "weather_current_condition",
+        "weather_forecast_tomorrow_min_c", "weather_forecast_tomorrow_max_c", "weather_forecast_tomorrow_rain_prob",
+        "weather_error",
+        "latency_total_ms", "latency_classifier_ms", "latency_llm_ms", "latency_route_ms", "latency_recommendations_ms", "latency_weather_ms"
+      ];
+
+      const rows = [headers.map(csvValue).join(",")];
+      for (const log of logs) {
+        const row = [
+          log.created_at, log.trip_id, log.intent, log.scope, log.city,
+          log.question, log.answer,
+          log.tool_route_status, log.tool_recommendations_status, log.tool_weather_status,
+          log.weather_location, log.weather_current_temp_c, log.weather_current_condition,
+          log.weather_forecast_tomorrow_min_c, log.weather_forecast_tomorrow_max_c, log.weather_forecast_tomorrow_rain_prob,
+          log.weather_error,
+          log.latency_total_ms, log.latency_classifier_ms, log.latency_llm_ms, log.latency_route_ms, log.latency_recommendations_ms, log.latency_weather_ms
+        ];
+        rows.push(row.map(csvValue).join(","));
+      }
+
+      return new Response(rows.join("\n"), {
+        headers: {
+          "Content-Type": "text/csv; charset=UTF-8",
+          "Content-Disposition": 'attachment; filename="yompr-concierge-logs.csv"'
         }
       });
     }
