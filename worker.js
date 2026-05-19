@@ -791,6 +791,25 @@ const CHAT_CLIENT_JS = String.raw`
     return row;
   }
 
+  function addTypingIndicator() {
+    const row = document.createElement("div");
+    row.className = "message-row assistant";
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+    const typing = document.createElement("div");
+    typing.className = "typing";
+    for (let i = 0; i < 3; i++) {
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      typing.appendChild(dot);
+    }
+    bubble.appendChild(typing);
+    row.appendChild(bubble);
+    messages.appendChild(row);
+    scrollToBottom();
+    return row;
+  }
+
   async function ask(event) {
     if (event && typeof event.preventDefault === "function") event.preventDefault();
     if (event && typeof event.stopPropagation === "function") event.stopPropagation();
@@ -806,7 +825,7 @@ const CHAT_CLIENT_JS = String.raw`
     questionInput.disabled = true;
     sendButton.disabled = true;
 
-    const thinkingRow = addMessage("assistant", "Pensando...", "typing");
+    const thinkingRow = addTypingIndicator();
 
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const localDate = new Date().toLocaleDateString("en-CA", { timeZone: timeZone });
@@ -1596,11 +1615,13 @@ export default {
       overflow-y: auto;
       padding: 18px;
       background: #f9fafb;
+      scroll-behavior: smooth;
     }
 
     .message-row {
       display: flex;
       margin-bottom: 12px;
+      animation: messageIn 220ms ease-out both;
     }
 
     .message-row.user {
@@ -1619,12 +1640,14 @@ export default {
       line-height: 1.45;
       white-space: pre-wrap;
       word-wrap: break-word;
+      transition: transform 140ms ease, box-shadow 180ms ease;
     }
 
     .user .bubble {
       background: #111827;
       color: #ffffff;
       border-bottom-right-radius: 5px;
+      box-shadow: 0 6px 14px rgba(17, 24, 39, 0.18);
     }
 
     .assistant .bubble {
@@ -1632,6 +1655,7 @@ export default {
       color: #111827;
       border: 1px solid #e5e7eb;
       border-bottom-left-radius: 5px;
+      box-shadow: 0 5px 12px rgba(15, 23, 42, 0.06);
     }
 
     .composer {
@@ -1650,10 +1674,13 @@ export default {
       padding: 12px 15px;
       font-size: 15px;
       outline: none;
+      transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
     }
 
     .composer input:focus {
       border-color: #111827;
+      box-shadow: 0 0 0 3px rgba(17, 24, 39, 0.08);
+      background: #fff;
     }
 
     .composer button {
@@ -1664,6 +1691,16 @@ export default {
       padding: 0 18px;
       font-size: 15px;
       cursor: pointer;
+      transition: transform 100ms ease, opacity 140ms ease, background 140ms ease;
+      will-change: transform;
+    }
+
+    .composer button:hover {
+      background: #0b1220;
+    }
+
+    .composer button:active {
+      transform: translateY(1px) scale(0.99);
     }
 
     .composer button:disabled {
@@ -1672,8 +1709,37 @@ export default {
     }
 
     .typing {
-      opacity: 0.7;
-      font-style: italic;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 48px;
+    }
+
+    .typing .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: #9ca3af;
+      opacity: 0.35;
+      animation: dotPulse 1.05s ease-in-out infinite;
+    }
+
+    .typing .dot:nth-child(2) {
+      animation-delay: 120ms;
+    }
+
+    .typing .dot:nth-child(3) {
+      animation-delay: 240ms;
+    }
+
+    @keyframes dotPulse {
+      0%, 80%, 100% { transform: translateY(0); opacity: 0.35; }
+      40% { transform: translateY(-3px); opacity: 1; }
+    }
+
+    @keyframes messageIn {
+      from { opacity: 0; transform: translateY(7px); }
+      to { opacity: 1; transform: translateY(0); }
     }
 
     @media (max-width: 600px) {
@@ -1699,7 +1765,7 @@ export default {
 </head>
 
 <body>
-  <div class="app" id="appRoot" data-trip-id="${escapeHtml(tripId)}" data-chat-version="v10">
+  <div class="app" id="appRoot" data-trip-id="${escapeHtml(tripId)}" data-chat-version="v11">
     <div class="header">
       <div class="brand">
         <img src="/logo-chat.png" alt="Yompr Chat" />
