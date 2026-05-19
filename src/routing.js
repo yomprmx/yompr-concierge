@@ -1,7 +1,27 @@
 import { geocodeDetailed } from "./geocode.js";
 import { buildCacheKey, cacheGetJson, cachePutJson } from "./cache.js";
 
-async function getRoute(from, to, mode = "driving", env = null) {
+function hasExplicitNowRequest(text) {
+  const q = String(text || "").toLowerCase();
+  return (
+    q.includes("ahora") ||
+    q.includes("ahorita") ||
+    q.includes("en este momento") ||
+    q.includes("ya mismo") ||
+    q.includes("salir ya") ||
+    q.includes("inmediatamente")
+  );
+}
+
+function buildPlanningDepartureTime(localDate) {
+  const base = localDate ? new Date(`${localDate}T00:00:00`) : new Date();
+  if (Number.isNaN(base.getTime())) return new Date(Date.now() + 2 * 86400000).toISOString();
+  base.setDate(base.getDate() + 2);
+  base.setHours(9, 0, 0, 0);
+  return base.toISOString();
+}
+
+async function getRoute(from, to, mode = "driving", env = null, departureTime = null) {
   try {
     const modeMap = { driving: "DRIVE", walking: "WALK", transit: "TRANSIT" };
     const travelMode = modeMap[mode] || "DRIVE";
@@ -10,6 +30,9 @@ async function getRoute(from, to, mode = "driving", env = null) {
       destination: { location: { latLng: { latitude: to.lat, longitude: to.lon } } },
       travelMode
     };
+    if (departureTime && (travelMode === "DRIVE" || travelMode === "TRANSIT")) {
+      body.departureTime = departureTime;
+    }
     if (travelMode === "DRIVE") body.routingPreference = "TRAFFIC_AWARE";
     const fieldMask = travelMode === "TRANSIT"
       ? "routes.duration,routes.distanceMeters,routes.legs.steps.transitDetails,routes.legs.steps.staticDuration"
@@ -61,21 +84,24 @@ function buildGoogleMapsLink(origin, destination, mode = null) {
 export async function enrichWithTransportInfo(tripJson, analysis, env = null) {
   if (analysis.tool_needed !== "route" && analysis.intent !== "route") return null;
   const tripId = analysis.trip_id || "unknown";
+  const explicitNow = hasExplicitNowRequest(analysis.original_question || "");
+  const routeTimeBasis = explicitNow ? "realtime_now" : "planning_daytime";
+  const departureTime = explicitNow ? new Date().toISOString() : buildPlanningDepartureTime(analysis.local_date || null);
   const origin = analysis.origin_query || null;
   const destination = analysis.destination_query || null;
   const requestedMode = analysis.route_mode || "all";
-  const cacheKey = buildCacheKey("route", [tripId, origin || "", destination || "", requestedMode, analysis.route_direction || "unknown"]);
+  const cacheKey = buildCacheKey("route", [tripId, origin || "", destination || "", requestedMode, analysis.route_direction || "unknown", routeTimeBasis, explicitNow ? "now" : (analysis.local_date || "")]);
   const cached = await cacheGetJson(env, cacheKey);
   if (cached) return { ...cached, cache_hit: true };
 
   if (!origin && !destination) {
-    return { type: "route_missing_origin_destination", route_direction: analysis.route_direction || "unknown", route_mode: requestedMode, origin: null, destination: null, place_name: analysis.place_name || null, city: analysis.city || null, note: "No se recibieron origen y destino suficientes para calcular una ruta.", cache_hit: false };
+    return { type: "route_missing_origin_destination", route_direction: analysis.route_direction || "unknown", route_mode: requestedMode, origin: null, destination: null, place_name: analysis.place_name || null, city: analysis.city || null, note: "No se recibieron origen y destino suficientes para calcular una ruta.", route_time_basis: routeTimeBasis, route_departure_time: departureTime, cache_hit: false };
   }
   if (origin && !destination) {
-    return { type: "route_without_destination", route_direction: analysis.route_direction || "unknown", route_mode: requestedMode, origin, destination: null, place_name: analysis.place_name || null, city: analysis.city || null, note: "El usuario pidió movilidad o alternativas de transporte, pero no indicó un destino concreto. No se puede calcular distancia o duración exacta sin destino.", maps_link: buildGoogleMapsLink(origin, null), cache_hit: false };
+    return { type: "route_without_destination", route_direction: analysis.route_direction || "unknown", route_mode: requestedMode, origin, destination: null, place_name: analysis.place_name || null, city: analysis.city || null, note: "El usuario pidió movilidad o alternativas de transporte, pero no indicó un destino concreto. No se puede calcular distancia o duración exacta sin destino.", maps_link: buildGoogleMapsLink(origin, null), route_time_basis: routeTimeBasis, route_departure_time: departureTime, cache_hit: false };
   }
   if (!origin && destination) {
-    return { type: "route_without_origin", route_direction: analysis.route_direction || "unknown", route_mode: requestedMode, origin: null, destination, place_name: analysis.place_name || null, city: analysis.city || null, note: "Hay destino, pero falta origen para calcular la ruta.", maps_link: buildGoogleMapsLink(destination, null), cache_hit: false };
+    return { type: "route_without_origin", route_direction: analysis.route_direction || "unknown", route_mode: requestedMode, origin: null, destination, place_name: analysis.place_name || null, city: analysis.city || null, note: "Hay destino, pero falta origen para calcular la ruta.", maps_link: buildGoogleMapsLink(destination, null), route_time_basis: routeTimeBasis, route_departure_time: departureTime, cache_hit: false };
   }
 
   const originGeo = await geocodeDetailed(origin, { city: analysis.city || null, country: null }, env);
@@ -106,6 +132,8 @@ export async function enrichWithTransportInfo(tripJson, analysis, env = null) {
       geocode_destination_error: !destinationCoords ? destinationGeo.error || destinationGeo.status || null : null,
       geocode_error: geocodeError || null,
       maps_link: buildGoogleMapsLink(origin, destination),
+      route_time_basis: routeTimeBasis,
+      route_departure_time: departureTime,
       cache_hit: false
     };
     await cachePutJson(env, cacheKey, payload, 6 * 3600);
@@ -113,9 +141,9 @@ export async function enrichWithTransportInfo(tripJson, analysis, env = null) {
   }
 
   const [walkingRoute, drivingRoute, transitRaw] = await Promise.all([
-    getRoute(originCoords, destinationCoords, "walking", env),
-    getRoute(originCoords, destinationCoords, "driving", env),
-    getRoute(originCoords, destinationCoords, "transit", env)
+    getRoute(originCoords, destinationCoords, "walking", env, departureTime),
+    getRoute(originCoords, destinationCoords, "driving", env, departureTime),
+    getRoute(originCoords, destinationCoords, "transit", env, departureTime)
   ]);
 
   const transitRoute = transitRaw && drivingRoute && transitRaw.duration_min > drivingRoute.duration_min * 3 ? null : transitRaw;
@@ -152,6 +180,8 @@ export async function enrichWithTransportInfo(tripJson, analysis, env = null) {
       geocode_error: null,
       route_error: routeError,
       options,
+      route_time_basis: routeTimeBasis,
+      route_departure_time: departureTime,
       cache_hit: false
     };
     await cachePutJson(env, cacheKey, payload, 6 * 3600);
@@ -182,6 +212,8 @@ export async function enrichWithTransportInfo(tripJson, analysis, env = null) {
     geocode_destination_lat: destinationCoords.lat || null,
     geocode_destination_lon: destinationCoords.lon || null,
     options,
+    route_time_basis: routeTimeBasis,
+    route_departure_time: departureTime,
     geocode_origin_attempted_query: originGeo.attempted_queries.join(" | ") || originCoords.attempted_query || null,
     geocode_destination_attempted_query: destinationGeo.attempted_queries.join(" | ") || destinationCoords.attempted_query || null,
     geocode_origin_error: null,

@@ -31,6 +31,8 @@ export async function saveChatLog(env, log) {
       transit_distance_km: log.transit_distance_km ?? null,
       route_direction: log.route_direction || null,
       route_mode: log.route_mode || null,
+      route_time_basis: log.route_time_basis || null,
+      route_departure_time: log.route_departure_time || null,
       place_name: log.place_name || null,
       geocode_origin: log.geocode_origin || null,
       geocode_destination: log.geocode_destination || null,

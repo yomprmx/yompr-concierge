@@ -121,7 +121,11 @@ async function processChatRequest(body, env) {
 
     try {
       const routeStart = Date.now();
-      transportInfo = await enrichWithTransportInfo(tripJson, { ...analysis, trip_id: tripId }, env);
+      transportInfo = await enrichWithTransportInfo(
+        tripJson,
+        { ...analysis, trip_id: tripId, original_question: question, local_date: localDate },
+        env
+      );
       routeMs = Date.now() - routeStart;
 
       if (transportInfo) {
@@ -311,6 +315,10 @@ Clima:
 
 Rutas:
 - Si transport_info.type = “calculated_route”, usa transport_info como fuente ÚNICA para distancias y tiempos. Prohibido usar conocimiento propio sobre distancias, tiempos o rutas.
+- Base temporal de rutas:
+  - Si transport_info.route_time_basis = "planning_daytime", explica brevemente que la ruta está calculada para planeación (2 días después a las 9:00) para mostrar opciones diurnas más reales.
+  - Si transport_info.route_time_basis = "realtime_now", explica que se calculó para salida inmediata.
+  - Si el cliente no pidió explícitamente salir ahora, no asumas urgencia.
 - Si transport_info.options existe, compara las opciones disponibles: caminando, taxi/coche y transporte público.
 - Para caminatas: usa ÚNICAMENTE transport_info.options.walking.duration_min y distance_km. Si walking es null, no menciones caminado como opción.
 - Para taxi/coche: usa ÚNICAMENTE transport_info.options.driving.duration_min y distance_km. Si driving es null, no menciones esta opción.
@@ -405,6 +413,8 @@ No ofrezcas capacidades que no tienes, ni insinúes que podrías hacerlo más ad
       transit_distance_km: transportInfo?.options?.transit?.distance_km ?? null,
       route_direction: analysis.route_direction || null,
       route_mode: analysis.route_mode || null,
+      route_time_basis: transportInfo?.route_time_basis || null,
+      route_departure_time: transportInfo?.route_departure_time || null,
       place_name: analysis.place_name || null,
       geocode_origin: transportInfo?.geocode_origin_display_name || null,
       geocode_destination: transportInfo?.geocode_destination_display_name || null,
@@ -707,7 +717,7 @@ export default {
             ? `${log.weather_forecast_tomorrow_min_c ?? "—"}° / ${log.weather_forecast_tomorrow_max_c ?? "—"}°${log.weather_forecast_tomorrow_rain_prob != null ? ` • lluvia ${log.weather_forecast_tomorrow_rain_prob}%` : ""}`
             : "—";
         const obs = `total ${log.latency_total_ms ?? "—"}ms | cls ${log.latency_classifier_ms ?? "—"} | llm ${log.latency_llm_ms ?? "—"} | route ${log.latency_route_ms ?? "—"} | rec ${log.latency_recommendations_ms ?? "—"} | weather ${log.latency_weather_ms ?? "—"}`;
-        const toolStatus = `route:${escapeHtml(log.tool_route_status || "—")} (cache:${log.cache_route_hit ? "hit" : "miss"}) | rec:${escapeHtml(log.tool_recommendations_status || "—")} (cache:${log.cache_recommendations_hit ? "hit" : "miss"}) | weather:${escapeHtml(log.tool_weather_status || "—")} (cache:${log.cache_weather_hit ? "hit" : "miss"})`;
+        const toolStatus = `route:${escapeHtml(log.tool_route_status || "—")} (cache:${log.cache_route_hit ? "hit" : "miss"}, ${escapeHtml(log.route_time_basis || "—")}) | rec:${escapeHtml(log.tool_recommendations_status || "—")} (cache:${log.cache_recommendations_hit ? "hit" : "miss"}) | weather:${escapeHtml(log.tool_weather_status || "—")} (cache:${log.cache_weather_hit ? "hit" : "miss"})`;
         return `
   <tr${rowStyle}>
     <td>${escapeHtml(log.created_at || "")}</td>
@@ -857,6 +867,8 @@ export default {
         lines.push(`Pregunta: ${log.question || ""}`);
         lines.push(`Respuesta: ${log.answer || ""}`);
         lines.push(`Route status: ${log.tool_route_status || ""}`);
+        lines.push(`Route time basis: ${log.route_time_basis || ""}`);
+        lines.push(`Route departure time: ${log.route_departure_time || ""}`);
         lines.push(`Recommendations status: ${log.tool_recommendations_status || ""}`);
         lines.push(`Weather status: ${log.tool_weather_status || ""}`);
         lines.push(`Clima ubicación: ${log.weather_location || ""}`);
@@ -893,6 +905,7 @@ export default {
         "created_at", "trip_id", "intent", "scope", "city",
         "question", "answer",
         "tool_route_status", "tool_recommendations_status", "tool_weather_status",
+        "route_time_basis", "route_departure_time",
         "weather_location", "weather_current_temp_c", "weather_current_condition",
         "weather_forecast_tomorrow_min_c", "weather_forecast_tomorrow_max_c", "weather_forecast_tomorrow_rain_prob",
         "weather_error",
@@ -905,6 +918,7 @@ export default {
           log.created_at, log.trip_id, log.intent, log.scope, log.city,
           log.question, log.answer,
           log.tool_route_status, log.tool_recommendations_status, log.tool_weather_status,
+          log.route_time_basis, log.route_departure_time,
           log.weather_location, log.weather_current_temp_c, log.weather_current_condition,
           log.weather_forecast_tomorrow_min_c, log.weather_forecast_tomorrow_max_c, log.weather_forecast_tomorrow_rain_prob,
           log.weather_error,
