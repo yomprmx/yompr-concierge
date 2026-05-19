@@ -923,7 +923,7 @@ const CHAT_CLIENT_JS = String.raw`
 
 const CLIENT_SW_JS = String.raw`
 const CACHE_NAME = "yompr-client-v1";
-const CORE_ASSETS = ["/", "/portal", "/logo-chat.png"];
+const CORE_ASSETS = ["/", "/portal", "/logo-chat.png", "/offline.html"];
 
 self.addEventListener("install", event => {
   event.waitUntil(
@@ -951,7 +951,7 @@ self.addEventListener("fetch", event => {
         const copy = res.clone();
         caches.open(CACHE_NAME).then(cache => cache.put(req, copy)).catch(() => {});
         return res;
-      }).catch(() => caches.match("/portal"));
+      }).catch(() => caches.match("/offline.html"));
     })
   );
 });
@@ -1091,6 +1091,33 @@ export default {
       }), {
         headers: {
           "Content-Type": "application/manifest+json; charset=UTF-8",
+          "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
+        }
+      });
+    }
+
+    if (url.pathname === "/offline.html") {
+      return new Response(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#111827" />
+  <title>Sin conexión</title>
+</head>
+<body style="font-family:Arial,sans-serif;background:#f3f4f6;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:18px;">
+  <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;max-width:420px;width:100%;padding:20px;text-align:center;">
+    <img src="/logo-chat.png" alt="Yompr Chat" style="width:68px;height:68px;object-fit:contain;margin-bottom:10px;" />
+    <h1 style="margin:0 0 8px;font-size:22px;color:#111827;">Sin conexión a internet</h1>
+    <p style="margin:0;color:#4b5563;line-height:1.5;">
+      Esta app necesita conexión para consultar rutas, clima y recomendaciones en tiempo real.
+      En cuanto recuperes internet, vuelve a abrir el portal para continuar el chat.
+    </p>
+  </div>
+</body>
+</html>`, {
+        headers: {
+          "Content-Type": "text/html; charset=UTF-8",
           "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
         }
       });
