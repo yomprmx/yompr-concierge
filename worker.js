@@ -116,6 +116,14 @@ function csvValue(value) {
   return `"${text.replace(/"/g, '""')}"`;
 }
 
+function isSystemTripKey(key) {
+  return (
+    key.startsWith("geo:v2:") ||
+    key.startsWith("cache:v1:") ||
+    key.startsWith("admin:sess:")
+  );
+}
+
 async function processChatRequest(body, env) {
   const t0 = Date.now();
   let tripId = body.tripId || "unknown";
@@ -1054,6 +1062,59 @@ export default {
       const blocked = await requireAdminAuth(request, env);
       if (blocked) return blocked;
 
+      const tripRows = [];
+      let cursor;
+      let scanned = 0;
+      do {
+        const page = await env.TRIPS.list({ limit: 1000, cursor });
+        for (const key of page.keys || []) {
+          scanned++;
+          if (isSystemTripKey(key.name)) continue;
+          const tripText = await env.TRIPS.get(key.name);
+          if (!tripText) continue;
+          let tripName = "";
+          let destination = "";
+          let flights = 0;
+          let hotels = 0;
+          let services = 0;
+          try {
+            const tripJson = JSON.parse(tripText);
+            tripName = tripJson?.trip?.name || "";
+            destination = tripJson?.trip?.destination || "";
+            flights = (tripJson?.flightReservations || []).length;
+            hotels = (tripJson?.hotelVouchers || []).length;
+            services = (tripJson?.serviceBookings || []).length;
+          } catch (_) {}
+          tripRows.push({
+            id: key.name,
+            tripName,
+            destination,
+            flights,
+            hotels,
+            services,
+            modified: key.metadata?.modified || ""
+          });
+        }
+        cursor = page.cursor;
+      } while (cursor);
+
+      tripRows.sort((a, b) => a.id.localeCompare(b.id));
+      const tripsHtml = tripRows.map(t => `
+        <tr>
+          <td style="padding:8px; border:1px solid #e5e7eb; font-family:monospace;">${escapeHtml(t.id)}</td>
+          <td style="padding:8px; border:1px solid #e5e7eb;">${escapeHtml(t.tripName || "—")}</td>
+          <td style="padding:8px; border:1px solid #e5e7eb;">${escapeHtml(t.destination || "—")}</td>
+          <td style="padding:8px; border:1px solid #e5e7eb; text-align:center;">${t.flights}</td>
+          <td style="padding:8px; border:1px solid #e5e7eb; text-align:center;">${t.hotels}</td>
+          <td style="padding:8px; border:1px solid #e5e7eb; text-align:center;">${t.services}</td>
+          <td style="padding:8px; border:1px solid #e5e7eb; white-space:nowrap;">
+            <a href="/v/${encodeURIComponent(t.id)}" target="_blank">Abrir</a>
+            &nbsp;|&nbsp;
+            <button type="button" onclick="deleteTrip('${escapeHtml(t.id)}')" style="border:none; background:#b91c1c; color:#fff; padding:4px 8px; border-radius:6px; cursor:pointer;">Eliminar</button>
+          </td>
+        </tr>
+      `).join("");
+
       return new Response(`
 <!DOCTYPE html>
 <html>
@@ -1066,6 +1127,28 @@ export default {
   <br><br>
   <button onclick="uploadTrip()">Guardar viaje</button>
   <div id="result" style="margin-top:20px;"></div>
+
+  <hr style="margin:22px 0;" />
+  <h2>Trips cargados (${tripRows.length})</h2>
+  <p style="font-size:12px; color:#6b7280;">Se escanearon ${scanned} claves en KV (se filtran claves internas de cache/sesiones).</p>
+  <div style="overflow:auto; border:1px solid #e5e7eb; border-radius:8px;">
+    <table style="width:100%; border-collapse:collapse; font-size:13px;">
+      <thead>
+        <tr style="background:#f3f4f6;">
+          <th style="padding:8px; border:1px solid #e5e7eb; text-align:left;">Trip ID</th>
+          <th style="padding:8px; border:1px solid #e5e7eb; text-align:left;">Nombre</th>
+          <th style="padding:8px; border:1px solid #e5e7eb; text-align:left;">Destino</th>
+          <th style="padding:8px; border:1px solid #e5e7eb;">Vuelos</th>
+          <th style="padding:8px; border:1px solid #e5e7eb;">Hoteles</th>
+          <th style="padding:8px; border:1px solid #e5e7eb;">Servicios</th>
+          <th style="padding:8px; border:1px solid #e5e7eb;">Acciones</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${tripsHtml || `<tr><td colspan="7" style="padding:12px; text-align:center; color:#6b7280;">No hay trips cargados.</td></tr>`}
+      </tbody>
+    </table>
+  </div>
 
   <script>
     async function uploadTrip() {
@@ -1091,6 +1174,18 @@ export default {
         "<p><b>Resultado:</b> " + data.message + "</p>" +
         (data.trip_id ? "<p><b>Trip ID:</b> " + data.trip_id + "</p>" : "") +
         (data.link ? '<p><a href="' + data.link + '" target="_blank">Abrir viaje</a></p>' : "");
+    }
+
+    async function deleteTrip(tripId) {
+      if (!confirm("¿Eliminar trip " + tripId + "? Esta acción no se puede deshacer.")) return;
+      const res = await fetch("/api/admin/delete-trip", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tripId })
+      });
+      const data = await res.json();
+      alert(data.message || "Resultado desconocido");
+      if (res.ok && data.success) location.reload();
     }
   </script>
 </body>
@@ -1132,6 +1227,22 @@ export default {
           message: "El archivo JSON no es válido o hubo un error al guardarlo.",
           error: String(error)
         }, { status: 400 });
+      }
+    }
+
+    if (url.pathname === "/api/admin/delete-trip" && request.method === "POST") {
+      const blocked = await requireAdminAuth(request, env);
+      if (blocked) return blocked;
+      try {
+        const body = await request.json();
+        const tripId = String(body?.tripId || "").trim();
+        if (!tripId || isSystemTripKey(tripId)) {
+          return Response.json({ success: false, message: "Trip inválido." }, { status: 400 });
+        }
+        await env.TRIPS.delete(tripId);
+        return Response.json({ success: true, message: `Trip ${tripId} eliminado.` });
+      } catch (e) {
+        return Response.json({ success: false, message: "No se pudo eliminar el trip.", error: String(e) }, { status: 400 });
       }
     }
 
