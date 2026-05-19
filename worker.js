@@ -37,6 +37,71 @@ function parseConversationHistory(value) {
   }
 }
 
+function parseCookies(request) {
+  const cookieHeader = request.headers.get("Cookie") || "";
+  const pairs = cookieHeader.split(";").map(p => p.trim()).filter(Boolean);
+  const out = {};
+  for (const pair of pairs) {
+    const idx = pair.indexOf("=");
+    if (idx <= 0) continue;
+    const key = pair.slice(0, idx).trim();
+    const value = pair.slice(idx + 1).trim();
+    out[key] = decodeURIComponent(value);
+  }
+  return out;
+}
+
+async function getAuthenticatedAdmin(request, env) {
+  const cookies = parseCookies(request);
+  const sessionToken = cookies.yompr_admin_session;
+  if (!sessionToken || !env?.TRIPS) return null;
+  try {
+    const raw = await env.TRIPS.get(`admin:sess:${sessionToken}`);
+    if (!raw) return null;
+    const session = JSON.parse(raw);
+    if (!session?.username) return null;
+    return session;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function requireAdminAuth(request, env) {
+  const admin = await getAuthenticatedAdmin(request, env);
+  if (!admin) {
+    return new Response(null, {
+      status: 302,
+      headers: { Location: "/admin/login" }
+    });
+  }
+  return null;
+}
+
+function renderAdminLoginPage(errorText = "") {
+  const errorHtml = errorText
+    ? `<p style="color:#b91c1c; margin:0 0 12px;">${escapeHtml(errorText)}</p>`
+    : "";
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin Login</title>
+</head>
+<body style="font-family: Arial, sans-serif; background:#f3f4f6; margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;">
+  <form method="POST" action="/admin/login" style="background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:20px; width:100%; max-width:360px;">
+    <h1 style="margin:0 0 14px; font-size:20px;">Yompr Admin</h1>
+    ${errorHtml}
+    <label style="font-size:13px; color:#374151;">Usuario</label>
+    <input name="username" type="text" required style="width:100%; margin:6px 0 12px; padding:10px; border:1px solid #d1d5db; border-radius:8px;" />
+    <label style="font-size:13px; color:#374151;">Contraseña</label>
+    <input name="password" type="password" required style="width:100%; margin:6px 0 14px; padding:10px; border:1px solid #d1d5db; border-radius:8px;" />
+    <button type="submit" style="width:100%; padding:10px; border:none; border-radius:8px; background:#111827; color:#fff; font-weight:600; cursor:pointer;">Entrar</button>
+  </form>
+</body>
+</html>`;
+}
+
 function renderInitialMessages(messages) {
   const safeMessages = Array.isArray(messages) ? messages : [];
   return safeMessages.map(message => `
@@ -661,6 +726,61 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
+    if (url.pathname === "/admin/login" && request.method === "GET") {
+      return new Response(renderAdminLoginPage(), {
+        headers: { "Content-Type": "text/html; charset=UTF-8" }
+      });
+    }
+
+    if (url.pathname === "/admin/login" && request.method === "POST") {
+      if (!env?.ADMIN_USERNAME || !env?.ADMIN_PASSWORD) {
+        return new Response(renderAdminLoginPage("Falta configurar ADMIN_USERNAME y ADMIN_PASSWORD en el entorno."), {
+          status: 500,
+          headers: { "Content-Type": "text/html; charset=UTF-8" }
+        });
+      }
+
+      const form = await request.formData();
+      const username = String(form.get("username") || "");
+      const password = String(form.get("password") || "");
+
+      if (username !== env.ADMIN_USERNAME || password !== env.ADMIN_PASSWORD) {
+        return new Response(renderAdminLoginPage("Credenciales inválidas."), {
+          status: 401,
+          headers: { "Content-Type": "text/html; charset=UTF-8" }
+        });
+      }
+
+      const token = crypto.randomUUID();
+      await env.TRIPS.put(`admin:sess:${token}`, JSON.stringify({
+        username,
+        created_at: new Date().toISOString()
+      }), { expirationTtl: 60 * 60 * 12 });
+
+      return new Response(null, {
+        status: 302,
+        headers: {
+          Location: "/admin",
+          "Set-Cookie": `yompr_admin_session=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=43200`
+        }
+      });
+    }
+
+    if (url.pathname === "/admin/logout") {
+      const cookies = parseCookies(request);
+      const token = cookies.yompr_admin_session;
+      if (token) {
+        await env.TRIPS.delete(`admin:sess:${token}`).catch(() => {});
+      }
+      return new Response(null, {
+        status: 302,
+        headers: {
+          Location: "/admin/login",
+          "Set-Cookie": "yompr_admin_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0"
+        }
+      });
+    }
+
     if (url.pathname === "/api/chat-client.js") {
       return new Response(CHAT_CLIENT_JS, {
         headers: {
@@ -677,11 +797,8 @@ export default {
     }
 
     if (url.pathname === "/admin/logs") {
-      const password = url.searchParams.get("key");
-
-      if (password !== "Rigo090490!") {
-        return new Response("No autorizado", { status: 401 });
-      }
+      const blocked = await requireAdminAuth(request, env);
+      if (blocked) return blocked;
 
       const list = await env.CHAT_LOGS.list({ limit: 200 });
       const logs = [];
@@ -774,15 +891,16 @@ export default {
 </head>
 <body>
   <h1>Yompr Concierge Logs</h1>
+  <p><a href="/admin">Admin</a> | <a href="/admin/logout">Cerrar sesión</a></p>
   <p>Últimas 200 preguntas registradas.</p>
   <p>
     <a
-      href="/admin/logs.txt?key=${encodeURIComponent(password)}"
+      href="/admin/logs.txt"
       download="yompr-concierge-logs.txt"
       style="display:inline-block; padding:8px 12px; background:#111827; color:#fff; text-decoration:none; border-radius:6px; font-size:12px;"
     >Descargar TXT</a>
     <a
-      href="/admin/logs.csv?key=${encodeURIComponent(password)}"
+      href="/admin/logs.csv"
       download="yompr-concierge-logs.csv"
       style="display:inline-block; margin-left:8px; padding:8px 12px; background:#2563eb; color:#fff; text-decoration:none; border-radius:6px; font-size:12px;"
     >Descargar CSV</a>
@@ -839,10 +957,8 @@ export default {
     }
 
     if (url.pathname === "/admin/logs.txt") {
-      const password = url.searchParams.get("key");
-      if (password !== "Rigo090490!") {
-        return new Response("No autorizado", { status: 401 });
-      }
+      const blocked = await requireAdminAuth(request, env);
+      if (blocked) return blocked;
 
       const list = await env.CHAT_LOGS.list({ limit: 200 });
       const logs = [];
@@ -889,10 +1005,8 @@ export default {
     }
 
     if (url.pathname === "/admin/logs.csv") {
-      const password = url.searchParams.get("key");
-      if (password !== "Rigo090490!") {
-        return new Response("No autorizado", { status: 401 });
-      }
+      const blocked = await requireAdminAuth(request, env);
+      if (blocked) return blocked;
 
       const list = await env.CHAT_LOGS.list({ limit: 200 });
       const logs = [];
@@ -937,11 +1051,8 @@ export default {
     }
 
     if (url.pathname === "/admin") {
-      const password = url.searchParams.get("key");
-
-      if (password !== "Rigo090490!") {
-        return new Response("No autorizado", { status: 401 });
-      }
+      const blocked = await requireAdminAuth(request, env);
+      if (blocked) return blocked;
 
       return new Response(`
 <!DOCTYPE html>
@@ -949,6 +1060,7 @@ export default {
 <head><meta charset="UTF-8" /><title>Yompr Concierge Admin</title></head>
 <body style="font-family: Arial; padding: 24px;">
   <h1>Yompr Concierge Admin</h1>
+  <p><a href="/admin/logs">Ver logs</a> | <a href="/admin/logout">Cerrar sesión</a></p>
   <p>Sube aquí el archivo JSON completo del viaje.</p>
   <input type="file" id="jsonFile" accept=".json,application/json" />
   <br><br>
@@ -987,6 +1099,8 @@ export default {
     }
 
     if (url.pathname === "/api/upload-trip" && request.method === "POST") {
+      const blocked = await requireAdminAuth(request, env);
+      if (blocked) return blocked;
       try {
         const tripJson = await request.json();
 
