@@ -1817,6 +1817,8 @@ export default {
       justify-content: center;
       padding-top: env(safe-area-inset-top);
       padding-bottom: env(safe-area-inset-bottom);
+      padding-left: env(safe-area-inset-left);
+      padding-right: env(safe-area-inset-right);
     }
 
     .app {
@@ -2010,9 +2012,15 @@ export default {
     }
 
     @media (max-width: 600px) {
+      body {
+        padding-left: max(8px, env(safe-area-inset-left));
+        padding-right: max(8px, env(safe-area-inset-right));
+      }
       .app {
         max-width: none;
-        border: none;
+        border: 1px solid #e5e7eb;
+        border-radius: 14px;
+        overflow: hidden;
         min-height: calc(100svh - env(safe-area-inset-top) - env(safe-area-inset-bottom));
       }
 
