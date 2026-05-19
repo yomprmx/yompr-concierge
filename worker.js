@@ -85,7 +85,7 @@ function renderAdminLoginPage(errorText = "") {
 <html>
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1" />
   <title>Admin Login</title>
 </head>
 <body style="font-family: Arial, sans-serif; background:#f3f4f6; margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;">
@@ -240,7 +240,7 @@ function renderClientPortal(errorText = "") {
 <html>
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1" />
   <meta name="theme-color" content="#111827" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
@@ -881,6 +881,12 @@ const CHAT_CLIENT_JS = String.raw`
   let conversationHistory = [];
   let isSending = false;
 
+  function syncViewportHeight() {
+    const vv = window.visualViewport;
+    const h = vv ? vv.height : window.innerHeight;
+    document.documentElement.style.setProperty("--vvh", h + "px");
+  }
+
   function scrollToBottom() {
     messages.scrollTop = messages.scrollHeight;
   }
@@ -1042,6 +1048,15 @@ const CHAT_CLIENT_JS = String.raw`
   questionInput.addEventListener("keydown", function(event) {
     if (event.key === "Enter") ask(event);
   });
+
+  syncViewportHeight();
+  window.addEventListener("resize", syncViewportHeight);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", syncViewportHeight);
+    window.visualViewport.addEventListener("scroll", syncViewportHeight);
+  }
+  questionInput.addEventListener("focus", () => setTimeout(syncViewportHeight, 80));
+  questionInput.addEventListener("blur", () => setTimeout(syncViewportHeight, 80));
 
   scrollToBottom();
 })();
@@ -1806,6 +1821,7 @@ export default {
       height: 100%;
       overflow: hidden;
     }
+    :root { --vvh: 100dvh; }
     * {
       box-sizing: border-box;
     }
@@ -1815,7 +1831,7 @@ export default {
       font-family: Arial, sans-serif;
       background: #f4f4f5;
       color: #111827;
-      height: 100%;
+      height: var(--vvh);
       display: flex;
       justify-content: center;
       padding-top: env(safe-area-inset-top);
@@ -1827,7 +1843,7 @@ export default {
     .app {
       width: 100%;
       max-width: 720px;
-      height: 100%;
+      height: var(--vvh);
       max-height: 100%;
       background: #ffffff;
       display: flex;
@@ -1949,7 +1965,7 @@ export default {
       border: 1px solid #d1d5db;
       border-radius: 999px;
       padding: 12px 15px;
-      font-size: 15px;
+      font-size: 16px;
       outline: none;
       transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
     }
@@ -2035,7 +2051,7 @@ export default {
 
       .bubble {
         max-width: 86%;
-        font-size: 15px;
+        font-size: 16px;
       }
 
       .header {
