@@ -241,6 +241,12 @@ function renderClientPortal(errorText = "") {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#111827" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Yompr" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="/logo-chat.png" />
   <title>Yompr Concierge</title>
 </head>
 <body style="font-family:Arial,sans-serif;background:#f3f4f6;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;">
@@ -253,7 +259,39 @@ function renderClientPortal(errorText = "") {
     ${errorHtml}
     <input name="accessCode" placeholder="Ejemplo: AB12CD" required style="width:100%;padding:11px;border:1px solid #d1d5db;border-radius:8px; text-transform:uppercase;" />
     <button type="submit" style="margin-top:12px;width:100%;padding:11px;border:none;border-radius:8px;background:#111827;color:#fff;font-weight:600;cursor:pointer;">Entrar</button>
+    <button id="installAppBtn" type="button" style="margin-top:10px;width:100%;padding:11px;border:1px solid #d1d5db;border-radius:8px;background:#fff;color:#111827;font-weight:600;cursor:pointer; display:none;">Instalar app</button>
+    <p id="installHint" style="font-size:12px; color:#6b7280; margin-top:10px; display:none;">En iPhone: Compartir → “Agregar a pantalla de inicio”.</p>
   </form>
+  <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => {});
+    }
+    const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    const isStandalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone;
+    const installBtn = document.getElementById("installAppBtn");
+    const installHint = document.getElementById("installHint");
+    let deferredPrompt = null;
+
+    window.addEventListener("beforeinstallprompt", (e) => {
+      e.preventDefault();
+      deferredPrompt = e;
+      if (installBtn && !isStandalone) installBtn.style.display = "block";
+    });
+
+    if (installBtn) {
+      installBtn.addEventListener("click", async () => {
+        if (!deferredPrompt) return;
+        deferredPrompt.prompt();
+        await deferredPrompt.userChoice.catch(() => {});
+        deferredPrompt = null;
+        installBtn.style.display = "none";
+      });
+    }
+
+    if (isIOS && !isStandalone && installHint) {
+      installHint.style.display = "block";
+    }
+  </script>
 </body>
 </html>`;
 }
@@ -883,6 +921,42 @@ const CHAT_CLIENT_JS = String.raw`
 })();
 `;
 
+const CLIENT_SW_JS = String.raw`
+const CACHE_NAME = "yompr-client-v1";
+const CORE_ASSETS = ["/", "/portal", "/logo-chat.png"];
+
+self.addEventListener("install", event => {
+  event.waitUntil(
+    caches.open(CACHE_NAME).then(cache => cache.addAll(CORE_ASSETS)).catch(() => {})
+  );
+  self.skipWaiting();
+});
+
+self.addEventListener("activate", event => {
+  event.waitUntil(
+    caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k))))
+  );
+  self.clients.claim();
+});
+
+self.addEventListener("fetch", event => {
+  const req = event.request;
+  if (req.method !== "GET") return;
+  const url = new URL(req.url);
+  if (url.pathname.startsWith("/admin")) return;
+  event.respondWith(
+    caches.match(req).then(cached => {
+      if (cached) return cached;
+      return fetch(req).then(res => {
+        const copy = res.clone();
+        caches.open(CACHE_NAME).then(cache => cache.put(req, copy)).catch(() => {});
+        return res;
+      }).catch(() => caches.match("/portal"));
+    })
+  );
+});
+`;
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -989,6 +1063,35 @@ export default {
           "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
           "Pragma": "no-cache",
           "Expires": "0"
+        }
+      });
+    }
+
+    if (url.pathname === "/sw.js") {
+      return new Response(CLIENT_SW_JS, {
+        headers: {
+          "Content-Type": "application/javascript; charset=UTF-8",
+          "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
+        }
+      });
+    }
+
+    if (url.pathname === "/manifest.webmanifest") {
+      return new Response(JSON.stringify({
+        name: "Yompr Concierge",
+        short_name: "Yompr",
+        start_url: "/portal",
+        display: "standalone",
+        background_color: "#f3f4f6",
+        theme_color: "#111827",
+        icons: [
+          { src: "/logo-chat.png", sizes: "192x192", type: "image/png" },
+          { src: "/logo-chat.png", sizes: "512x512", type: "image/png" }
+        ]
+      }), {
+        headers: {
+          "Content-Type": "application/manifest+json; charset=UTF-8",
+          "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
         }
       });
     }
@@ -1537,6 +1640,12 @@ export default {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#111827" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Yompr Chat" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="/logo-chat.png" />
   <title>${tripName}</title>
 
   <style>
@@ -1798,6 +1907,11 @@ export default {
   </div>
   <script>
 ${CHAT_CLIENT_JS}
+  </script>
+  <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => {});
+    }
   </script>
 </body>
 </html>
