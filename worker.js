@@ -90,6 +90,9 @@ function renderAdminLoginPage(errorText = "") {
 </head>
 <body style="font-family: Arial, sans-serif; background:#f3f4f6; margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;">
   <form method="POST" action="/admin/login" style="background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:20px; width:100%; max-width:360px;">
+    <div style="text-align:center; margin-bottom:10px;">
+      <img src="/logo.png" alt="Yompr" style="width:64px; height:64px; object-fit:contain;" />
+    </div>
     <h1 style="margin:0 0 14px; font-size:20px;">Yompr Admin</h1>
     ${errorHtml}
     <label style="font-size:13px; color:#374151;">Usuario</label>
@@ -205,6 +208,9 @@ function renderClientPortal(errorText = "") {
 </head>
 <body style="font-family:Arial,sans-serif;background:#f3f4f6;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;">
   <form method="POST" action="/portal/access" style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:22px;width:100%;max-width:380px;">
+    <div style="text-align:center; margin-bottom:10px;">
+      <img src="/logo-chat.png" alt="Yompr Chat" style="width:70px; height:70px; object-fit:contain;" />
+    </div>
     <h1 style="margin:0 0 10px;font-size:22px;">Yompr Concierge</h1>
     <p style="margin:0 0 14px;color:#6b7280;font-size:14px;">Ingresa tu clave de acceso para abrir tu viaje.</p>
     ${errorHtml}
@@ -1017,6 +1023,7 @@ export default {
   </style>
 </head>
 <body>
+  <img src="/logo.png" alt="Yompr" style="width:56px; height:56px; object-fit:contain;" />
   <h1>Yompr Concierge Logs</h1>
   <p><a href="/admin">Admin</a> | <a href="/admin/logout">Cerrar sesión</a></p>
   <p>Últimas 200 preguntas registradas.</p>
@@ -1248,6 +1255,7 @@ export default {
 <html>
 <head><meta charset="UTF-8" /><title>Yompr Concierge Admin</title></head>
 <body style="font-family: Arial; padding: 24px;">
+  <img src="/logo.png" alt="Yompr" style="width:56px; height:56px; object-fit:contain;" />
   <h1>Yompr Concierge Admin</h1>
   <p><a href="/admin/logs">Ver logs</a> | <a href="/admin/logout">Cerrar sesión</a></p>
   <p>Sube aquí el archivo JSON completo del viaje.</p>
@@ -1491,6 +1499,17 @@ export default {
       background: #ffffff;
       flex-shrink: 0;
     }
+    .brand {
+      display:flex;
+      align-items:center;
+      gap:10px;
+    }
+    .brand img {
+      width:34px;
+      height:34px;
+      object-fit:contain;
+      border-radius:8px;
+    }
 
     .header h1 {
       margin: 0;
@@ -1629,7 +1648,10 @@ export default {
 <body>
   <div class="app" id="appRoot" data-trip-id="${escapeHtml(tripId)}" data-chat-version="v10">
     <div class="header">
-      <h1>${tripName}</h1>
+      <div class="brand">
+        <img src="/logo-chat.png" alt="Yompr Chat" />
+        <h1>${tripName}</h1>
+      </div>
       <p>${destinationText}</p>
 
       <div class="trip-summary">

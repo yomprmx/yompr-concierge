@@ -6,6 +6,9 @@
   "observability": {
     "enabled": true
   },
+  "assets": {
+    "directory": "./assets"
+  },
   "kv_namespaces": [
     {
       "binding": "TRIPS",
