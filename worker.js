@@ -319,6 +319,7 @@ Rutas:
   - Si transport_info.route_time_basis = "planning_daytime", explica brevemente que la ruta está calculada para planeación (2 días después a las 9:00) para mostrar opciones diurnas más reales.
   - Si transport_info.route_time_basis = "realtime_now", explica que se calculó para salida inmediata.
   - Si el cliente no pidió explícitamente salir ahora, no asumas urgencia.
+  - Si transport_info.maps_link_note existe, compártela de forma breve para evitar confusión entre el cálculo planeado y la vista de Google Maps.
 - Si transport_info.options existe, compara las opciones disponibles: caminando, taxi/coche y transporte público.
 - Para caminatas: usa ÚNICAMENTE transport_info.options.walking.duration_min y distance_km. Si walking es null, no menciones caminado como opción.
 - Para taxi/coche: usa ÚNICAMENTE transport_info.options.driving.duration_min y distance_km. Si driving es null, no menciones esta opción.

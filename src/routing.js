@@ -96,7 +96,7 @@ export async function enrichWithTransportInfo(tripJson, analysis, env = null) {
   const origin = analysis.origin_query || null;
   const destination = analysis.destination_query || null;
   const requestedMode = analysis.route_mode || "all";
-  const cacheKey = buildCacheKey("route", [tripId, origin || "", destination || "", requestedMode, analysis.route_direction || "unknown", routeTimeBasis, explicitNow ? "now" : (analysis.local_date || ""), "link-v2"]);
+  const cacheKey = buildCacheKey("route", [tripId, origin || "", destination || "", requestedMode, analysis.route_direction || "unknown", routeTimeBasis, explicitNow ? "now" : (analysis.local_date || ""), "link-v3"]);
   const cached = await cacheGetJson(env, cacheKey);
   if (cached) return { ...cached, cache_hit: true };
 
@@ -104,10 +104,10 @@ export async function enrichWithTransportInfo(tripJson, analysis, env = null) {
     return { type: "route_missing_origin_destination", route_direction: analysis.route_direction || "unknown", route_mode: requestedMode, origin: null, destination: null, place_name: analysis.place_name || null, city: analysis.city || null, note: "No se recibieron origen y destino suficientes para calcular una ruta.", route_time_basis: routeTimeBasis, route_departure_time: departureTime, cache_hit: false };
   }
   if (origin && !destination) {
-    return { type: "route_without_destination", route_direction: analysis.route_direction || "unknown", route_mode: requestedMode, origin, destination: null, place_name: analysis.place_name || null, city: analysis.city || null, note: "El usuario pidió movilidad o alternativas de transporte, pero no indicó un destino concreto. No se puede calcular distancia o duración exacta sin destino.", maps_link: buildGoogleMapsLink(origin, null), route_time_basis: routeTimeBasis, route_departure_time: departureTime, cache_hit: false };
+    return { type: "route_without_destination", route_direction: analysis.route_direction || "unknown", route_mode: requestedMode, origin, destination: null, place_name: analysis.place_name || null, city: analysis.city || null, note: "El usuario pidió movilidad o alternativas de transporte, pero no indicó un destino concreto. No se puede calcular distancia o duración exacta sin destino.", maps_link: buildGoogleMapsLink(origin, null), maps_link_note: "Google Maps abre este enlace en tiempo real (Salir ahora).", route_time_basis: routeTimeBasis, route_departure_time: departureTime, cache_hit: false };
   }
   if (!origin && destination) {
-    return { type: "route_without_origin", route_direction: analysis.route_direction || "unknown", route_mode: requestedMode, origin: null, destination, place_name: analysis.place_name || null, city: analysis.city || null, note: "Hay destino, pero falta origen para calcular la ruta.", maps_link: buildGoogleMapsLink(destination, null), route_time_basis: routeTimeBasis, route_departure_time: departureTime, cache_hit: false };
+    return { type: "route_without_origin", route_direction: analysis.route_direction || "unknown", route_mode: requestedMode, origin: null, destination, place_name: analysis.place_name || null, city: analysis.city || null, note: "Hay destino, pero falta origen para calcular la ruta.", maps_link: buildGoogleMapsLink(destination, null), maps_link_note: "Google Maps abre este enlace en tiempo real (Salir ahora).", route_time_basis: routeTimeBasis, route_departure_time: departureTime, cache_hit: false };
   }
 
   const originGeo = await geocodeDetailed(origin, { city: analysis.city || null, country: null }, env);
@@ -140,6 +140,9 @@ export async function enrichWithTransportInfo(tripJson, analysis, env = null) {
       maps_link: buildGoogleMapsLink(origin, destination, requestedMode === "all" ? null : requestedMode, departureTime),
       route_time_basis: routeTimeBasis,
       route_departure_time: departureTime,
+      maps_link_note: routeTimeBasis === "planning_daytime"
+        ? "Google Maps puede abrir este enlace en tiempo real (Salir ahora), aunque el cálculo interno se hizo para planeación diurna."
+        : null,
       cache_hit: false
     };
     await cachePutJson(env, cacheKey, payload, 6 * 3600);
@@ -188,6 +191,9 @@ export async function enrichWithTransportInfo(tripJson, analysis, env = null) {
       options,
       route_time_basis: routeTimeBasis,
       route_departure_time: departureTime,
+      maps_link_note: routeTimeBasis === "planning_daytime"
+        ? "Google Maps puede abrir este enlace en tiempo real (Salir ahora), aunque el cálculo interno se hizo para planeación diurna."
+        : null,
       cache_hit: false
     };
     await cachePutJson(env, cacheKey, payload, 6 * 3600);
@@ -220,6 +226,9 @@ export async function enrichWithTransportInfo(tripJson, analysis, env = null) {
     options,
     route_time_basis: routeTimeBasis,
     route_departure_time: departureTime,
+    maps_link_note: routeTimeBasis === "planning_daytime"
+      ? "Google Maps puede abrir este enlace en tiempo real (Salir ahora), aunque el cálculo interno se hizo para planeación diurna."
+      : null,
     geocode_origin_attempted_query: originGeo.attempted_queries.join(" | ") || originCoords.attempted_query || null,
     geocode_destination_attempted_query: destinationGeo.attempted_queries.join(" | ") || destinationCoords.attempted_query || null,
     geocode_origin_error: null,
