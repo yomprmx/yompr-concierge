@@ -249,19 +249,21 @@ function renderClientPortal(errorText = "") {
   <link rel="apple-touch-icon" href="/appicon.png" />
   <title>Yompr Concierge</title>
 </head>
-<body style="font-family:Arial,sans-serif;background:#f3f4f6;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;">
-  <form method="POST" action="/portal/access" style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:22px;width:100%;max-width:380px;">
-    <div style="text-align:center; margin-bottom:10px;">
-      <img src="/logo-chat.png" alt="Yompr Chat" style="width:70px; height:70px; object-fit:contain;" />
+<body style="font-family:Arial,sans-serif;background:#f3f4f6;margin:0;">
+  <main style="min-height:100vh;min-height:100dvh;display:flex;align-items:flex-start;justify-content:center;padding:calc(env(safe-area-inset-top) + 18px) 16px 22px;">
+  <form method="POST" action="/portal/access" style="background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:22px;width:100%;max-width:520px;box-shadow:0 8px 24px rgba(15,23,42,0.05);">
+    <div style="text-align:center; margin-bottom:12px;">
+      <img src="/logo-chat.png" alt="Yompr Chat" style="width:84px; height:84px; object-fit:contain;" />
     </div>
-    <h1 style="margin:0 0 10px;font-size:22px;">Yompr Concierge</h1>
-    <p style="margin:0 0 14px;color:#6b7280;font-size:14px;">Ingresa tu clave de acceso para abrir tu viaje.</p>
+    <h1 style="margin:0 0 10px;font-size:44px;line-height:1.03;letter-spacing:0;">Yompr Concierge</h1>
+    <p style="margin:0 0 16px;color:#6b7280;font-size:17px;line-height:1.35;">Ingresa tu clave de acceso para abrir tu viaje.</p>
     ${errorHtml}
-    <input name="accessCode" placeholder="Ejemplo: AB12CD" required style="width:100%;padding:11px;border:1px solid #d1d5db;border-radius:8px; text-transform:uppercase;" />
-    <button type="submit" style="margin-top:12px;width:100%;padding:11px;border:none;border-radius:8px;background:#111827;color:#fff;font-weight:600;cursor:pointer;">Entrar</button>
-    <button id="installAppBtn" type="button" style="margin-top:10px;width:100%;padding:11px;border:1px solid #d1d5db;border-radius:8px;background:#fff;color:#111827;font-weight:600;cursor:pointer; display:none;">Instalar app</button>
+    <input name="accessCode" placeholder="EJEMPLO: AB12CD" required style="width:100%;padding:15px 16px;border:1px solid #d1d5db;border-radius:14px; text-transform:uppercase;font-size:20px;line-height:1.1;" />
+    <button type="submit" style="margin-top:12px;width:100%;padding:14px;border:none;border-radius:14px;background:#111827;color:#fff;font-weight:700;cursor:pointer;font-size:22px;line-height:1.05;">Entrar</button>
+    <button id="installAppBtn" type="button" style="margin-top:10px;width:100%;padding:12px;border:1px solid #d1d5db;border-radius:14px;background:#fff;color:#111827;font-weight:700;cursor:pointer; display:none;font-size:18px;">Instalar app</button>
     <p id="installHint" style="font-size:12px; color:#6b7280; margin-top:10px; display:none;">En iPhone: Compartir → “Agregar a pantalla de inicio”.</p>
   </form>
+  </main>
   <script>
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js").catch(() => {});
