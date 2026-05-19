@@ -1802,6 +1802,10 @@ export default {
   <title>${tripName}</title>
 
   <style>
+    html, body {
+      height: 100%;
+      overflow: hidden;
+    }
     * {
       box-sizing: border-box;
     }
@@ -1811,8 +1815,7 @@ export default {
       font-family: Arial, sans-serif;
       background: #f4f4f5;
       color: #111827;
-      min-height: 100vh;
-      min-height: 100svh;
+      height: 100%;
       display: flex;
       justify-content: center;
       padding-top: env(safe-area-inset-top);
@@ -1824,8 +1827,8 @@ export default {
     .app {
       width: 100%;
       max-width: 720px;
-      min-height: 100vh;
-      min-height: 100svh;
+      height: 100%;
+      max-height: 100%;
       background: #ffffff;
       display: flex;
       flex-direction: column;
@@ -1881,6 +1884,8 @@ export default {
     .messages {
       flex: 1;
       overflow-y: auto;
+      overflow-x: hidden;
+      -webkit-overflow-scrolling: touch;
       padding: 18px;
       background: #f9fafb;
       scroll-behavior: smooth;
@@ -1927,6 +1932,9 @@ export default {
     }
 
     .composer {
+      position: sticky;
+      bottom: 0;
+      z-index: 10;
       padding: 12px;
       padding-bottom: calc(22px + env(safe-area-inset-bottom));
       border-top: 1px solid #e5e7eb;
@@ -2022,7 +2030,7 @@ export default {
         border: 1px solid #e5e7eb;
         border-radius: 14px;
         overflow: hidden;
-        min-height: calc(100svh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 18px);
+        height: calc(100svh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 18px);
       }
 
       .bubble {
