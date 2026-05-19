@@ -355,6 +355,12 @@ function renderClientPortal(errorText = "") {
       .access-input { font-size: 18px; padding: 14px; }
       .btn-primary { font-size: 20px; }
     }
+    @media (hover: none) and (pointer: coarse) {
+      .shell {
+        align-items: flex-start;
+        padding-top: max(18px, calc(env(safe-area-inset-top) + 10px));
+      }
+    }
   </style>
 </head>
 <body>
@@ -1795,15 +1801,19 @@ export default {
       font-family: Arial, sans-serif;
       background: #f4f4f5;
       color: #111827;
-      height: 100vh;
+      min-height: 100vh;
+      min-height: 100svh;
       display: flex;
       justify-content: center;
+      padding-top: env(safe-area-inset-top);
+      padding-bottom: env(safe-area-inset-bottom);
     }
 
     .app {
       width: 100%;
       max-width: 720px;
-      height: 100vh;
+      min-height: 100vh;
+      min-height: 100svh;
       background: #ffffff;
       display: flex;
       flex-direction: column;
@@ -1906,6 +1916,7 @@ export default {
 
     .composer {
       padding: 12px;
+      padding-bottom: calc(12px + env(safe-area-inset-bottom));
       border-top: 1px solid #e5e7eb;
       background: #ffffff;
       display: flex;
@@ -1992,6 +2003,7 @@ export default {
       .app {
         max-width: none;
         border: none;
+        min-height: calc(100svh - env(safe-area-inset-top) - env(safe-area-inset-bottom));
       }
 
       .bubble {
