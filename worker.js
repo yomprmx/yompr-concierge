@@ -248,20 +248,128 @@ function renderClientPortal(errorText = "") {
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="apple-touch-icon" href="/appicon.png" />
   <title>Yompr Concierge</title>
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #f3f4f6;
+      color: #111827;
+    }
+    .shell {
+      min-height: 100vh;
+      min-height: 100svh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding:
+        max(20px, calc(env(safe-area-inset-top) + 14px))
+        max(16px, env(safe-area-inset-right))
+        max(24px, env(safe-area-inset-bottom))
+        max(16px, env(safe-area-inset-left));
+    }
+    .card {
+      width: min(100%, 560px);
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 20px;
+      padding: 22px;
+      box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
+    }
+    .logo-wrap { text-align: center; margin-bottom: 12px; }
+    .logo-wrap img { width: 84px; height: 84px; object-fit: contain; }
+    h1 {
+      margin: 0 0 10px;
+      font-size: clamp(42px, 5.6vw, 56px);
+      line-height: 1.02;
+      letter-spacing: 0;
+    }
+    .subtitle {
+      margin: 0 0 16px;
+      color: #6b7280;
+      font-size: 17px;
+      line-height: 1.35;
+    }
+    .error {
+      color: #b91c1c;
+      margin: 0 0 12px;
+      font-size: 14px;
+    }
+    .access-input {
+      width: 100%;
+      padding: 15px 16px;
+      border: 1px solid #d1d5db;
+      border-radius: 14px;
+      text-transform: uppercase;
+      font-size: 20px;
+      line-height: 1.1;
+      outline: none;
+      transition: border-color .14s ease, box-shadow .14s ease;
+    }
+    .access-input:focus {
+      border-color: #0f172a;
+      box-shadow: 0 0 0 3px rgba(17, 24, 39, 0.08);
+    }
+    .btn {
+      width: 100%;
+      border: none;
+      border-radius: 14px;
+      cursor: pointer;
+      font-weight: 700;
+    }
+    .btn-primary {
+      margin-top: 12px;
+      padding: 14px;
+      background: #0f172a;
+      color: #fff;
+      font-size: 22px;
+      line-height: 1.05;
+    }
+    .btn-secondary {
+      margin-top: 10px;
+      padding: 12px;
+      border: 1px solid #d1d5db;
+      background: #fff;
+      color: #111827;
+      font-size: 18px;
+      display: none;
+    }
+    .install-hint {
+      font-size: 12px;
+      color: #6b7280;
+      margin-top: 10px;
+      display: none;
+    }
+    @media (max-width: 640px) {
+      .shell {
+        align-items: flex-start;
+        padding-top: max(18px, calc(env(safe-area-inset-top) + 10px));
+      }
+      .card {
+        border-radius: 18px;
+        padding: 18px;
+      }
+      h1 { font-size: 48px; }
+      .subtitle { font-size: 16px; margin-bottom: 14px; }
+      .access-input { font-size: 18px; padding: 14px; }
+      .btn-primary { font-size: 20px; }
+    }
+  </style>
 </head>
-<body style="font-family:Arial,sans-serif;background:#f3f4f6;margin:0;">
-  <main style="min-height:100vh;min-height:100dvh;display:flex;align-items:flex-start;justify-content:center;padding:calc(env(safe-area-inset-top) + 18px) 16px 22px;">
-  <form method="POST" action="/portal/access" style="background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:22px;width:100%;max-width:520px;box-shadow:0 8px 24px rgba(15,23,42,0.05);">
-    <div style="text-align:center; margin-bottom:12px;">
-      <img src="/logo-chat.png" alt="Yompr Chat" style="width:84px; height:84px; object-fit:contain;" />
+<body>
+  <main class="shell">
+  <form method="POST" action="/portal/access" class="card">
+    <div class="logo-wrap">
+      <img src="/logo-chat.png" alt="Yompr Chat" />
     </div>
-    <h1 style="margin:0 0 10px;font-size:44px;line-height:1.03;letter-spacing:0;">Yompr Concierge</h1>
-    <p style="margin:0 0 16px;color:#6b7280;font-size:17px;line-height:1.35;">Ingresa tu clave de acceso para abrir tu viaje.</p>
-    ${errorHtml}
-    <input name="accessCode" placeholder="EJEMPLO: AB12CD" required style="width:100%;padding:15px 16px;border:1px solid #d1d5db;border-radius:14px; text-transform:uppercase;font-size:20px;line-height:1.1;" />
-    <button type="submit" style="margin-top:12px;width:100%;padding:14px;border:none;border-radius:14px;background:#111827;color:#fff;font-weight:700;cursor:pointer;font-size:22px;line-height:1.05;">Entrar</button>
-    <button id="installAppBtn" type="button" style="margin-top:10px;width:100%;padding:12px;border:1px solid #d1d5db;border-radius:14px;background:#fff;color:#111827;font-weight:700;cursor:pointer; display:none;font-size:18px;">Instalar app</button>
-    <p id="installHint" style="font-size:12px; color:#6b7280; margin-top:10px; display:none;">En iPhone: Compartir → “Agregar a pantalla de inicio”.</p>
+    <h1>Yompr Concierge</h1>
+    <p class="subtitle">Ingresa tu clave de acceso para abrir tu viaje.</p>
+    ${errorHtml ? `<p class="error">${escapeHtml(errorText)}</p>` : ""}
+    <input name="accessCode" class="access-input" placeholder="EJEMPLO: AB12CD" required />
+    <button type="submit" class="btn btn-primary">Entrar</button>
+    <button id="installAppBtn" type="button" class="btn btn-secondary">Instalar app</button>
+    <p id="installHint" class="install-hint">En iPhone: Compartir → “Agregar a pantalla de inicio”.</p>
   </form>
   </main>
   <script>
