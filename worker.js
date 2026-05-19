@@ -116,6 +116,105 @@ function csvValue(value) {
   return `"${text.replace(/"/g, '""')}"`;
 }
 
+function isSystemTripKey(key) {
+  return (
+    key.startsWith("geo:v2:") ||
+    key.startsWith("cache:v1:") ||
+    key.startsWith("admin:sess:") ||
+    key.startsWith("access:v1:") ||
+    key.startsWith("tripmeta:v1:")
+  );
+}
+
+function normalizeAccessCode(value) {
+  return String(value || "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "")
+    .slice(0, 12);
+}
+
+function generateAccessCode() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "";
+  for (let i = 0; i < 6; i++) {
+    code += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return code;
+}
+
+async function getTripMeta(env, tripId) {
+  try {
+    const raw = await env.TRIPS.get(`tripmeta:v1:${tripId}`);
+    return raw ? JSON.parse(raw) : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+async function setTripMeta(env, tripId, meta) {
+  await env.TRIPS.put(`tripmeta:v1:${tripId}`, JSON.stringify(meta || {}));
+}
+
+async function resolveTripByAccessCode(env, code) {
+  const normalized = normalizeAccessCode(code);
+  if (!normalized) return null;
+  const tripId = await env.TRIPS.get(`access:v1:${normalized}`);
+  return tripId || null;
+}
+
+async function assignAccessCode(env, tripId, preferredCode = null) {
+  const meta = await getTripMeta(env, tripId);
+  const currentCode = normalizeAccessCode(meta.access_code || "");
+  const desired = normalizeAccessCode(preferredCode || "");
+
+  if (!desired && currentCode) {
+    const mapped = await env.TRIPS.get(`access:v1:${currentCode}`);
+    if (mapped === tripId) return currentCode;
+  }
+
+  const tryCodes = [];
+  if (desired) tryCodes.push(desired);
+  for (let i = 0; i < 8; i++) tryCodes.push(generateAccessCode());
+
+  let selected = null;
+  for (const candidate of tryCodes) {
+    const existingTrip = await env.TRIPS.get(`access:v1:${candidate}`);
+    if (!existingTrip || existingTrip === tripId) {
+      selected = candidate;
+      break;
+    }
+  }
+  if (!selected) throw new Error("No se pudo asignar clave de acceso única.");
+
+  if (currentCode && currentCode !== selected) {
+    await env.TRIPS.delete(`access:v1:${currentCode}`).catch(() => {});
+  }
+  await env.TRIPS.put(`access:v1:${selected}`, tripId);
+  await setTripMeta(env, tripId, { ...meta, access_code: selected, updated_at: new Date().toISOString() });
+  return selected;
+}
+
+function renderClientPortal(errorText = "") {
+  const errorHtml = errorText ? `<p style="color:#b91c1c; margin:0 0 12px;">${escapeHtml(errorText)}</p>` : "";
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Yompr Concierge</title>
+</head>
+<body style="font-family:Arial,sans-serif;background:#f3f4f6;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;">
+  <form method="POST" action="/portal/access" style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:22px;width:100%;max-width:380px;">
+    <h1 style="margin:0 0 10px;font-size:22px;">Yompr Concierge</h1>
+    <p style="margin:0 0 14px;color:#6b7280;font-size:14px;">Ingresa tu clave de acceso para abrir tu viaje.</p>
+    ${errorHtml}
+    <input name="accessCode" placeholder="Ejemplo: AB12CD" required style="width:100%;padding:11px;border:1px solid #d1d5db;border-radius:8px; text-transform:uppercase;" />
+    <button type="submit" style="margin-top:12px;width:100%;padding:11px;border:none;border-radius:8px;background:#111827;color:#fff;font-weight:600;cursor:pointer;">Entrar</button>
+  </form>
+</body>
+</html>`;
+}
+
 async function processChatRequest(body, env) {
   const t0 = Date.now();
   let tripId = body.tripId || "unknown";
@@ -726,6 +825,38 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
+    if (url.pathname === "/" || url.pathname === "/portal") {
+      return new Response(renderClientPortal(), {
+        headers: { "Content-Type": "text/html; charset=UTF-8" }
+      });
+    }
+
+    if (url.pathname === "/portal/access" && request.method === "POST") {
+      const form = await request.formData();
+      const accessCode = normalizeAccessCode(form.get("accessCode"));
+      const tripId = await resolveTripByAccessCode(env, accessCode);
+      if (!tripId) {
+        return new Response(renderClientPortal("Clave inválida. Verifica tu código."), {
+          status: 400,
+          headers: { "Content-Type": "text/html; charset=UTF-8" }
+        });
+      }
+      return new Response(null, {
+        status: 302,
+        headers: { Location: `/v/${encodeURIComponent(tripId)}` }
+      });
+    }
+
+    if (url.pathname.startsWith("/c/")) {
+      const accessCode = normalizeAccessCode(decodeURIComponent(url.pathname.replace("/c/", "")));
+      const tripId = await resolveTripByAccessCode(env, accessCode);
+      if (!tripId) return new Response("Clave inválida.", { status: 404 });
+      return new Response(null, {
+        status: 302,
+        headers: { Location: `/v/${encodeURIComponent(tripId)}` }
+      });
+    }
+
     if (url.pathname === "/admin/login" && request.method === "GET") {
       return new Response(renderAdminLoginPage(), {
         headers: { "Content-Type": "text/html; charset=UTF-8" }
@@ -790,10 +921,6 @@ export default {
           "Expires": "0"
         }
       });
-    }
-
-    if (url.pathname === "/") {
-      return new Response("Yompr Concierge funcionando 🚀");
     }
 
     if (url.pathname === "/admin/logs") {
@@ -1054,6 +1181,68 @@ export default {
       const blocked = await requireAdminAuth(request, env);
       if (blocked) return blocked;
 
+      const tripRows = [];
+      let cursor;
+      let scanned = 0;
+      do {
+        const page = await env.TRIPS.list({ limit: 1000, cursor });
+        for (const key of page.keys || []) {
+          scanned++;
+          if (isSystemTripKey(key.name)) continue;
+          const tripText = await env.TRIPS.get(key.name);
+          if (!tripText) continue;
+          const meta = await getTripMeta(env, key.name);
+          let tripName = "";
+          let destination = "";
+          let flights = 0;
+          let hotels = 0;
+          let services = 0;
+          try {
+            const tripJson = JSON.parse(tripText);
+            tripName = tripJson?.trip?.name || "";
+            destination = tripJson?.trip?.destination || "";
+            flights = (tripJson?.flightReservations || []).length;
+            hotels = (tripJson?.hotelVouchers || []).length;
+            services = (tripJson?.serviceBookings || []).length;
+          } catch (_) {}
+          tripRows.push({
+            id: key.name,
+            accessCode: normalizeAccessCode(meta.access_code || ""),
+            tripName,
+            destination,
+            flights,
+            hotels,
+            services,
+            modified: key.metadata?.modified || ""
+          });
+        }
+        cursor = page.cursor;
+      } while (cursor);
+
+      tripRows.sort((a, b) => a.id.localeCompare(b.id));
+      const tripsHtml = tripRows.map(t => `
+        <tr>
+          <td style="padding:8px; border:1px solid #e5e7eb; font-family:monospace;">${escapeHtml(t.id)}</td>
+          <td style="padding:8px; border:1px solid #e5e7eb; font-family:monospace;">
+            <span id="code-${escapeHtml(t.id)}">${escapeHtml(t.accessCode || "—")}</span>
+          </td>
+          <td style="padding:8px; border:1px solid #e5e7eb;">${escapeHtml(t.tripName || "—")}</td>
+          <td style="padding:8px; border:1px solid #e5e7eb;">${escapeHtml(t.destination || "—")}</td>
+          <td style="padding:8px; border:1px solid #e5e7eb; text-align:center;">${t.flights}</td>
+          <td style="padding:8px; border:1px solid #e5e7eb; text-align:center;">${t.hotels}</td>
+          <td style="padding:8px; border:1px solid #e5e7eb; text-align:center;">${t.services}</td>
+          <td style="padding:8px; border:1px solid #e5e7eb; white-space:nowrap;">
+            <a href="/v/${encodeURIComponent(t.id)}" target="_blank">Abrir</a>
+            &nbsp;|&nbsp;
+            <a href="/c/${encodeURIComponent(t.accessCode || "")}" target="_blank">Portal</a>
+            &nbsp;|&nbsp;
+            <button type="button" onclick="editAccessCode('${escapeHtml(t.id)}','${escapeHtml(t.accessCode || "")}')" style="border:none; background:#1d4ed8; color:#fff; padding:4px 8px; border-radius:6px; cursor:pointer;">Editar clave</button>
+            &nbsp;|&nbsp;
+            <button type="button" onclick="deleteTrip('${escapeHtml(t.id)}')" style="border:none; background:#b91c1c; color:#fff; padding:4px 8px; border-radius:6px; cursor:pointer;">Eliminar</button>
+          </td>
+        </tr>
+      `).join("");
+
       return new Response(`
 <!DOCTYPE html>
 <html>
@@ -1066,6 +1255,29 @@ export default {
   <br><br>
   <button onclick="uploadTrip()">Guardar viaje</button>
   <div id="result" style="margin-top:20px;"></div>
+
+  <hr style="margin:22px 0;" />
+  <h2>Trips cargados (${tripRows.length})</h2>
+  <p style="font-size:12px; color:#6b7280;">Se escanearon ${scanned} claves en KV (se filtran claves internas de cache/sesiones).</p>
+  <div style="overflow:auto; border:1px solid #e5e7eb; border-radius:8px;">
+    <table style="width:100%; border-collapse:collapse; font-size:13px;">
+      <thead>
+        <tr style="background:#f3f4f6;">
+          <th style="padding:8px; border:1px solid #e5e7eb; text-align:left;">Trip ID</th>
+          <th style="padding:8px; border:1px solid #e5e7eb; text-align:left;">Clave acceso</th>
+          <th style="padding:8px; border:1px solid #e5e7eb; text-align:left;">Nombre</th>
+          <th style="padding:8px; border:1px solid #e5e7eb; text-align:left;">Destino</th>
+          <th style="padding:8px; border:1px solid #e5e7eb;">Vuelos</th>
+          <th style="padding:8px; border:1px solid #e5e7eb;">Hoteles</th>
+          <th style="padding:8px; border:1px solid #e5e7eb;">Servicios</th>
+          <th style="padding:8px; border:1px solid #e5e7eb;">Acciones</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${tripsHtml || `<tr><td colspan="8" style="padding:12px; text-align:center; color:#6b7280;">No hay trips cargados.</td></tr>`}
+      </tbody>
+    </table>
+  </div>
 
   <script>
     async function uploadTrip() {
@@ -1090,7 +1302,34 @@ export default {
       result.innerHTML =
         "<p><b>Resultado:</b> " + data.message + "</p>" +
         (data.trip_id ? "<p><b>Trip ID:</b> " + data.trip_id + "</p>" : "") +
-        (data.link ? '<p><a href="' + data.link + '" target="_blank">Abrir viaje</a></p>' : "");
+        (data.access_code ? "<p><b>Clave acceso:</b> " + data.access_code + "</p>" : "") +
+        (data.link ? '<p><a href="' + data.link + '" target="_blank">Abrir viaje</a></p>' : "") +
+        (data.portal_link ? '<p><a href="' + data.portal_link + '" target="_blank">Abrir por portal</a></p>' : "");
+    }
+
+    async function deleteTrip(tripId) {
+      if (!confirm("¿Eliminar trip " + tripId + "? Esta acción no se puede deshacer.")) return;
+      const res = await fetch("/api/admin/delete-trip", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tripId })
+      });
+      const data = await res.json();
+      alert(data.message || "Resultado desconocido");
+      if (res.ok && data.success) location.reload();
+    }
+
+    async function editAccessCode(tripId, currentCode) {
+      const next = prompt("Nueva clave de acceso (A-Z y 0-9):", currentCode || "");
+      if (next === null) return;
+      const res = await fetch("/api/admin/set-access-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tripId, accessCode: next })
+      });
+      const data = await res.json();
+      alert(data.message || "Resultado desconocido");
+      if (res.ok && data.success) location.reload();
     }
   </script>
 </body>
@@ -1119,12 +1358,15 @@ export default {
         }
 
         await env.TRIPS.put(tripId, JSON.stringify(tripJson));
+        const accessCode = await assignAccessCode(env, tripId);
 
         return Response.json({
           success: true,
           message: "Viaje guardado correctamente.",
           trip_id: tripId,
-          link: "/v/" + encodeURIComponent(tripId)
+          access_code: accessCode,
+          link: "/v/" + encodeURIComponent(tripId),
+          portal_link: "/c/" + encodeURIComponent(accessCode)
         });
       } catch (error) {
         return Response.json({
@@ -1132,6 +1374,57 @@ export default {
           message: "El archivo JSON no es válido o hubo un error al guardarlo.",
           error: String(error)
         }, { status: 400 });
+      }
+    }
+
+    if (url.pathname === "/api/admin/delete-trip" && request.method === "POST") {
+      const blocked = await requireAdminAuth(request, env);
+      if (blocked) return blocked;
+      try {
+        const body = await request.json();
+        const tripId = String(body?.tripId || "").trim();
+        if (!tripId || isSystemTripKey(tripId)) {
+          return Response.json({ success: false, message: "Trip inválido." }, { status: 400 });
+        }
+        const meta = await getTripMeta(env, tripId);
+        const accessCode = normalizeAccessCode(meta.access_code || "");
+        if (accessCode) {
+          await env.TRIPS.delete(`access:v1:${accessCode}`).catch(() => {});
+        }
+        await env.TRIPS.delete(`tripmeta:v1:${tripId}`).catch(() => {});
+        await env.TRIPS.delete(tripId);
+        return Response.json({ success: true, message: `Trip ${tripId} eliminado.` });
+      } catch (e) {
+        return Response.json({ success: false, message: "No se pudo eliminar el trip.", error: String(e) }, { status: 400 });
+      }
+    }
+
+    if (url.pathname === "/api/admin/set-access-code" && request.method === "POST") {
+      const blocked = await requireAdminAuth(request, env);
+      if (blocked) return blocked;
+      try {
+        const body = await request.json();
+        const tripId = String(body?.tripId || "").trim();
+        const requested = normalizeAccessCode(body?.accessCode || "");
+        if (!tripId || isSystemTripKey(tripId)) {
+          return Response.json({ success: false, message: "Trip inválido." }, { status: 400 });
+        }
+        if (!requested) {
+          return Response.json({ success: false, message: "Clave inválida. Usa solo A-Z y 0-9." }, { status: 400 });
+        }
+        const tripText = await env.TRIPS.get(tripId);
+        if (!tripText) {
+          return Response.json({ success: false, message: "Trip no encontrado." }, { status: 404 });
+        }
+        const code = await assignAccessCode(env, tripId, requested);
+        return Response.json({
+          success: true,
+          message: `Clave actualizada a ${code}.`,
+          access_code: code,
+          portal_link: `/c/${encodeURIComponent(code)}`
+        });
+      } catch (e) {
+        return Response.json({ success: false, message: "No se pudo actualizar la clave.", error: String(e) }, { status: 400 });
       }
     }
 
