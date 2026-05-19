@@ -246,7 +246,7 @@ function renderClientPortal(errorText = "") {
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Yompr" />
   <link rel="manifest" href="/manifest.webmanifest" />
-  <link rel="apple-touch-icon" href="/logo-chat.png" />
+  <link rel="apple-touch-icon" href="/appicon.png" />
   <title>Yompr Concierge</title>
 </head>
 <body style="font-family:Arial,sans-serif;background:#f3f4f6;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;">
@@ -923,7 +923,7 @@ const CHAT_CLIENT_JS = String.raw`
 
 const CLIENT_SW_JS = String.raw`
 const CACHE_NAME = "yompr-client-v1";
-const CORE_ASSETS = ["/", "/portal", "/logo-chat.png", "/offline.html"];
+const CORE_ASSETS = ["/", "/portal", "/logo-chat.png", "/appicon.png", "/offline.html"];
 
 self.addEventListener("install", event => {
   event.waitUntil(
@@ -1085,8 +1085,8 @@ export default {
         background_color: "#f3f4f6",
         theme_color: "#111827",
         icons: [
-          { src: "/logo-chat.png", sizes: "192x192", type: "image/png" },
-          { src: "/logo-chat.png", sizes: "512x512", type: "image/png" }
+          { src: "/appicon.png", sizes: "192x192", type: "image/png" },
+          { src: "/appicon.png", sizes: "512x512", type: "image/png" }
         ]
       }), {
         headers: {
@@ -1672,7 +1672,7 @@ export default {
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Yompr Chat" />
   <link rel="manifest" href="/manifest.webmanifest" />
-  <link rel="apple-touch-icon" href="/logo-chat.png" />
+  <link rel="apple-touch-icon" href="/appicon.png" />
   <title>${tripName}</title>
 
   <style>
