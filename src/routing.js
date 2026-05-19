@@ -74,10 +74,16 @@ async function getRoute(from, to, mode = "driving", env = null, departureTime = 
   }
 }
 
-function buildGoogleMapsLink(origin, destination, mode = null) {
+function buildGoogleMapsLink(origin, destination, mode = null, departureTime = null) {
   if (!destination) return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(origin || "")}`;
   let url = `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(origin || "")}&destination=${encodeURIComponent(destination || "")}`;
   if (mode) url += `&travelmode=${encodeURIComponent(mode)}`;
+  if (departureTime && (mode === "driving" || mode === "transit")) {
+    const unixSeconds = Math.floor(new Date(departureTime).getTime() / 1000);
+    if (Number.isFinite(unixSeconds) && unixSeconds > 0) {
+      url += `&departure_time=${unixSeconds}`;
+    }
+  }
   return url;
 }
 
@@ -90,7 +96,7 @@ export async function enrichWithTransportInfo(tripJson, analysis, env = null) {
   const origin = analysis.origin_query || null;
   const destination = analysis.destination_query || null;
   const requestedMode = analysis.route_mode || "all";
-  const cacheKey = buildCacheKey("route", [tripId, origin || "", destination || "", requestedMode, analysis.route_direction || "unknown", routeTimeBasis, explicitNow ? "now" : (analysis.local_date || "")]);
+  const cacheKey = buildCacheKey("route", [tripId, origin || "", destination || "", requestedMode, analysis.route_direction || "unknown", routeTimeBasis, explicitNow ? "now" : (analysis.local_date || ""), "link-v2"]);
   const cached = await cacheGetJson(env, cacheKey);
   if (cached) return { ...cached, cache_hit: true };
 
@@ -131,7 +137,7 @@ export async function enrichWithTransportInfo(tripJson, analysis, env = null) {
       geocode_origin_error: !originCoords ? originGeo.error || originGeo.status || null : null,
       geocode_destination_error: !destinationCoords ? destinationGeo.error || destinationGeo.status || null : null,
       geocode_error: geocodeError || null,
-      maps_link: buildGoogleMapsLink(origin, destination),
+      maps_link: buildGoogleMapsLink(origin, destination, requestedMode === "all" ? null : requestedMode, departureTime),
       route_time_basis: routeTimeBasis,
       route_departure_time: departureTime,
       cache_hit: false
@@ -148,9 +154,9 @@ export async function enrichWithTransportInfo(tripJson, analysis, env = null) {
 
   const transitRoute = transitRaw && drivingRoute && transitRaw.duration_min > drivingRoute.duration_min * 3 ? null : transitRaw;
   const options = {
-    walking: walkingRoute ? { mode: "walking", duration_min: Math.round(walkingRoute.duration_min), distance_km: Math.round(walkingRoute.distance_km * 10) / 10, maps_link: buildGoogleMapsLink(origin, destination, "walking") } : null,
-    driving: drivingRoute ? { mode: "driving", duration_min: Math.round(drivingRoute.duration_min), distance_km: Math.round(drivingRoute.distance_km * 10) / 10, maps_link: buildGoogleMapsLink(origin, destination, "driving") } : null,
-    transit: transitRoute ? { mode: "transit", duration_min: Math.round(transitRoute.duration_min), distance_km: Math.round(transitRoute.distance_km * 10) / 10, maps_link: buildGoogleMapsLink(origin, destination, "transit"), ...(transitRoute.steps?.length ? { steps: transitRoute.steps } : {}) } : { mode: "transit", duration_min: null, distance_km: null, maps_link: buildGoogleMapsLink(origin, destination, "transit"), note: "No se encontró ruta de transporte público; consulta opciones en Google Maps." }
+    walking: walkingRoute ? { mode: "walking", duration_min: Math.round(walkingRoute.duration_min), distance_km: Math.round(walkingRoute.distance_km * 10) / 10, maps_link: buildGoogleMapsLink(origin, destination, "walking", departureTime) } : null,
+    driving: drivingRoute ? { mode: "driving", duration_min: Math.round(drivingRoute.duration_min), distance_km: Math.round(drivingRoute.distance_km * 10) / 10, maps_link: buildGoogleMapsLink(origin, destination, "driving", departureTime) } : null,
+    transit: transitRoute ? { mode: "transit", duration_min: Math.round(transitRoute.duration_min), distance_km: Math.round(transitRoute.distance_km * 10) / 10, maps_link: buildGoogleMapsLink(origin, destination, "transit", departureTime), ...(transitRoute.steps?.length ? { steps: transitRoute.steps } : {}) } : { mode: "transit", duration_min: null, distance_km: null, maps_link: buildGoogleMapsLink(origin, destination, "transit", departureTime), note: "No se encontró ruta de transporte público; consulta opciones en Google Maps." }
   };
 
   let routeError = null;
@@ -170,7 +176,7 @@ export async function enrichWithTransportInfo(tripJson, analysis, env = null) {
       city: analysis.city || null,
       duration_min: null,
       distance_km: null,
-      maps_link: buildGoogleMapsLink(origin, destination),
+      maps_link: buildGoogleMapsLink(origin, destination, requestedMode === "all" ? null : requestedMode, departureTime),
       geocode_origin_display_name: originCoords.display_name || null,
       geocode_destination_display_name: destinationCoords.display_name || null,
       geocode_origin_attempted_query: originGeo.attempted_queries.join(" | ") || originCoords.attempted_query || null,
@@ -204,7 +210,7 @@ export async function enrichWithTransportInfo(tripJson, analysis, env = null) {
     city: analysis.city || null,
     duration_min: primary?.duration_min || null,
     distance_km: primary?.distance_km || null,
-    maps_link: primary?.maps_link || buildGoogleMapsLink(origin, destination),
+    maps_link: primary?.maps_link || buildGoogleMapsLink(origin, destination, requestedMode === "all" ? null : requestedMode, departureTime),
     geocode_origin_display_name: originCoords.display_name || null,
     geocode_destination_display_name: destinationCoords.display_name || null,
     geocode_origin_lat: originCoords.lat || null,
