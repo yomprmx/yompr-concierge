@@ -1928,7 +1928,7 @@ export default {
 
     .composer {
       padding: 12px;
-      padding-bottom: calc(16px + env(safe-area-inset-bottom));
+      padding-bottom: calc(22px + env(safe-area-inset-bottom));
       border-top: 1px solid #e5e7eb;
       background: #ffffff;
       display: flex;
@@ -2015,14 +2015,14 @@ export default {
       body {
         padding-left: max(8px, env(safe-area-inset-left));
         padding-right: max(8px, env(safe-area-inset-right));
-        padding-bottom: max(12px, calc(env(safe-area-inset-bottom) + 12px));
+        padding-bottom: max(18px, calc(env(safe-area-inset-bottom) + 16px));
       }
       .app {
         max-width: none;
         border: 1px solid #e5e7eb;
         border-radius: 14px;
         overflow: hidden;
-        min-height: calc(100svh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 12px);
+        min-height: calc(100svh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 18px);
       }
 
       .bubble {
