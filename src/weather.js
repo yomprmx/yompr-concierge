@@ -1,5 +1,6 @@
 import { geocodeDetailed } from "./geocode.js";
 import { normalizeText } from "./utils.js";
+import { buildCacheKey, cacheGetJson, cachePutJson } from "./cache.js";
 
 function firstNonEmpty(values) {
   for (const value of values) {
@@ -153,6 +154,7 @@ export async function enrichWithWeatherInfo(tripJson, analysis, env = null) {
   if (!env?.GOOGLE_MAPS_KEY) {
     return { type: "weather_error", error: "GOOGLE_MAPS_KEY no configurada" };
   }
+  const tripId = analysis.trip_id || "unknown";
 
   const candidates = buildWeatherCandidates(tripJson, analysis);
   if (!candidates.length) {
@@ -182,6 +184,7 @@ export async function enrichWithWeatherInfo(tripJson, analysis, env = null) {
 
   const lat = geocodeInfo.result.lat;
   const lon = geocodeInfo.result.lon;
+  const utcHourBucket = new Date().toISOString().slice(0, 13);
   const params = new URLSearchParams({
     key: env.GOOGLE_MAPS_KEY,
     "location.latitude": String(lat),
@@ -191,6 +194,18 @@ export async function enrichWithWeatherInfo(tripJson, analysis, env = null) {
   });
   const forecastDaysRequested = resolveForecastDaysByQuestion(analysis);
   const forecastHoursRequested = resolveForecastHoursByQuestion(analysis);
+  const cacheKey = buildCacheKey("weather", [
+    tripId,
+    lat,
+    lon,
+    analysis.city || "",
+    analysis.date_reference || "",
+    forecastDaysRequested,
+    forecastHoursRequested,
+    utcHourBucket
+  ]);
+  const cached = await cacheGetJson(env, cacheKey);
+  if (cached) return { ...cached, cache_hit: true };
 
   try {
     const [currentRes, forecastRes, hourlyRes] = await Promise.all([
@@ -220,7 +235,7 @@ export async function enrichWithWeatherInfo(tripJson, analysis, env = null) {
       : [];
     const recommendationWindows = buildSoftRecommendationWindows(forecastHours);
 
-    return {
+    const payload = {
       type: "weather_bundle",
       source: "google_weather_api",
       geocode_location: geocodeInfo.result.display_name || null,
@@ -233,8 +248,11 @@ export async function enrichWithWeatherInfo(tripJson, analysis, env = null) {
       forecast_days: forecastDays,
       forecast_hours_requested: forecastHoursRequested,
       forecast_hours: forecastHours,
-      recommendation_windows: recommendationWindows
+      recommendation_windows: recommendationWindows,
+      cache_hit: false
     };
+    await cachePutJson(env, cacheKey, payload, 45 * 60);
+    return payload;
   } catch (error) {
     return {
       type: "weather_error",

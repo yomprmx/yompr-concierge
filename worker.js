@@ -121,7 +121,7 @@ async function processChatRequest(body, env) {
 
     try {
       const routeStart = Date.now();
-      transportInfo = await enrichWithTransportInfo(tripJson, analysis, env);
+      transportInfo = await enrichWithTransportInfo(tripJson, { ...analysis, trip_id: tripId }, env);
       routeMs = Date.now() - routeStart;
 
       if (transportInfo) {
@@ -143,7 +143,7 @@ async function processChatRequest(body, env) {
       try {
         const recStart = Date.now();
         recommendationsInfo = await searchPlacesRecommendations(
-          { ...analysis, localDate, original_question: question },
+          { ...analysis, trip_id: tripId, localDate, original_question: question },
           tripJson,
           env
         );
@@ -162,7 +162,7 @@ async function processChatRequest(body, env) {
       const weatherStart = Date.now();
       weatherInfo = await enrichWithWeatherInfo(
         tripJson,
-        { ...analysis, original_question: question },
+        { ...analysis, trip_id: tripId, original_question: question },
         env
       );
       weatherMs = Date.now() - weatherStart;
@@ -451,6 +451,9 @@ No ofrezcas capacidades que no tienes, ni insinúes que podrías hacerlo más ad
       tool_weather_status: weatherInfo
         ? (weatherInfo.type === "weather_error" ? "error" : "ok")
         : ((intent === "weather" || intent === "recommendation") ? "none" : null),
+      cache_route_hit: Boolean(transportInfo?.cache_hit),
+      cache_recommendations_hit: Boolean(recommendationsInfo?.cache_hit),
+      cache_weather_hit: Boolean(weatherInfo?.cache_hit),
       used_transport_in_answer:
         answer.includes("estimado") ||
         answer.includes("Google Maps") ||
@@ -704,7 +707,7 @@ export default {
             ? `${log.weather_forecast_tomorrow_min_c ?? "—"}° / ${log.weather_forecast_tomorrow_max_c ?? "—"}°${log.weather_forecast_tomorrow_rain_prob != null ? ` • lluvia ${log.weather_forecast_tomorrow_rain_prob}%` : ""}`
             : "—";
         const obs = `total ${log.latency_total_ms ?? "—"}ms | cls ${log.latency_classifier_ms ?? "—"} | llm ${log.latency_llm_ms ?? "—"} | route ${log.latency_route_ms ?? "—"} | rec ${log.latency_recommendations_ms ?? "—"} | weather ${log.latency_weather_ms ?? "—"}`;
-        const toolStatus = `route:${escapeHtml(log.tool_route_status || "—")} | rec:${escapeHtml(log.tool_recommendations_status || "—")} | weather:${escapeHtml(log.tool_weather_status || "—")}`;
+        const toolStatus = `route:${escapeHtml(log.tool_route_status || "—")} (cache:${log.cache_route_hit ? "hit" : "miss"}) | rec:${escapeHtml(log.tool_recommendations_status || "—")} (cache:${log.cache_recommendations_hit ? "hit" : "miss"}) | weather:${escapeHtml(log.tool_weather_status || "—")} (cache:${log.cache_weather_hit ? "hit" : "miss"})`;
         return `
   <tr${rowStyle}>
     <td>${escapeHtml(log.created_at || "")}</td>

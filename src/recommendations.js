@@ -1,5 +1,6 @@
 import { normalizeText } from "./utils.js";
 import { geocode } from "./geocode.js";
+import { buildCacheKey, cacheGetJson, cachePutJson } from "./cache.js";
 
 const PRICE_LEVEL_MAP = {
   "PRICE_LEVEL_FREE": "gratuito",
@@ -11,8 +12,18 @@ const PRICE_LEVEL_MAP = {
 
 export async function searchPlacesRecommendations(analysis, tripJson, env) {
   if (!env?.GOOGLE_MAPS_KEY) return null;
+  const tripId = analysis.trip_id || "unknown";
   const query = analysis.recommendation_query;
   if (!query) return null;
+  const cacheKey = buildCacheKey("places", [
+    tripId,
+    analysis.city || "",
+    query,
+    analysis.price_preference || "",
+    analysis.localDate || ""
+  ]);
+  const cached = await cacheGetJson(env, cacheKey);
+  if (cached) return { ...cached, cache_hit: true };
 
   let locationBias = null;
   let hotelAnchor = null;
@@ -103,7 +114,7 @@ export async function searchPlacesRecommendations(analysis, tripJson, env) {
       nextDayRisk
     );
 
-    return {
+    const payload = {
       places,
       query,
       bias_used: Boolean(locationBias),
@@ -113,6 +124,8 @@ export async function searchPlacesRecommendations(analysis, tripJson, env) {
         next_day_risk: nextDayRisk
       }
     };
+    await cachePutJson(env, cacheKey, payload, 2 * 3600);
+    return payload;
   } catch (e) {
     return { places: [], query, bias_used: Boolean(locationBias), error: String(e) };
   }

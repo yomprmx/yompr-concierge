@@ -1,4 +1,5 @@
 import { geocodeDetailed } from "./geocode.js";
+import { buildCacheKey, cacheGetJson, cachePutJson } from "./cache.js";
 
 async function getRoute(from, to, mode = "driving", env = null) {
   try {
@@ -59,18 +60,22 @@ function buildGoogleMapsLink(origin, destination, mode = null) {
 
 export async function enrichWithTransportInfo(tripJson, analysis, env = null) {
   if (analysis.tool_needed !== "route" && analysis.intent !== "route") return null;
+  const tripId = analysis.trip_id || "unknown";
   const origin = analysis.origin_query || null;
   const destination = analysis.destination_query || null;
   const requestedMode = analysis.route_mode || "all";
+  const cacheKey = buildCacheKey("route", [tripId, origin || "", destination || "", requestedMode, analysis.route_direction || "unknown"]);
+  const cached = await cacheGetJson(env, cacheKey);
+  if (cached) return { ...cached, cache_hit: true };
 
   if (!origin && !destination) {
-    return { type: "route_missing_origin_destination", route_direction: analysis.route_direction || "unknown", route_mode: requestedMode, origin: null, destination: null, place_name: analysis.place_name || null, city: analysis.city || null, note: "No se recibieron origen y destino suficientes para calcular una ruta." };
+    return { type: "route_missing_origin_destination", route_direction: analysis.route_direction || "unknown", route_mode: requestedMode, origin: null, destination: null, place_name: analysis.place_name || null, city: analysis.city || null, note: "No se recibieron origen y destino suficientes para calcular una ruta.", cache_hit: false };
   }
   if (origin && !destination) {
-    return { type: "route_without_destination", route_direction: analysis.route_direction || "unknown", route_mode: requestedMode, origin, destination: null, place_name: analysis.place_name || null, city: analysis.city || null, note: "El usuario pidió movilidad o alternativas de transporte, pero no indicó un destino concreto. No se puede calcular distancia o duración exacta sin destino.", maps_link: buildGoogleMapsLink(origin, null) };
+    return { type: "route_without_destination", route_direction: analysis.route_direction || "unknown", route_mode: requestedMode, origin, destination: null, place_name: analysis.place_name || null, city: analysis.city || null, note: "El usuario pidió movilidad o alternativas de transporte, pero no indicó un destino concreto. No se puede calcular distancia o duración exacta sin destino.", maps_link: buildGoogleMapsLink(origin, null), cache_hit: false };
   }
   if (!origin && destination) {
-    return { type: "route_without_origin", route_direction: analysis.route_direction || "unknown", route_mode: requestedMode, origin: null, destination, place_name: analysis.place_name || null, city: analysis.city || null, note: "Hay destino, pero falta origen para calcular la ruta.", maps_link: buildGoogleMapsLink(destination, null) };
+    return { type: "route_without_origin", route_direction: analysis.route_direction || "unknown", route_mode: requestedMode, origin: null, destination, place_name: analysis.place_name || null, city: analysis.city || null, note: "Hay destino, pero falta origen para calcular la ruta.", maps_link: buildGoogleMapsLink(destination, null), cache_hit: false };
   }
 
   const originGeo = await geocodeDetailed(origin, { city: analysis.city || null, country: null }, env);
@@ -83,7 +88,7 @@ export async function enrichWithTransportInfo(tripJson, analysis, env = null) {
       !originCoords ? `origin: ${originGeo.error || originGeo.status}` : null,
       !destinationCoords ? `destination: ${destinationGeo.error || destinationGeo.status}` : null
     ].filter(Boolean).join(" | ");
-    return {
+    const payload = {
       type: "geocoding_failed",
       route_direction: analysis.route_direction || "unknown",
       route_mode: requestedMode,
@@ -100,8 +105,11 @@ export async function enrichWithTransportInfo(tripJson, analysis, env = null) {
       geocode_origin_error: !originCoords ? originGeo.error || originGeo.status || null : null,
       geocode_destination_error: !destinationCoords ? destinationGeo.error || destinationGeo.status || null : null,
       geocode_error: geocodeError || null,
-      maps_link: buildGoogleMapsLink(origin, destination)
+      maps_link: buildGoogleMapsLink(origin, destination),
+      cache_hit: false
     };
+    await cachePutJson(env, cacheKey, payload, 6 * 3600);
+    return payload;
   }
 
   const [walkingRoute, drivingRoute, transitRaw] = await Promise.all([
@@ -124,7 +132,7 @@ export async function enrichWithTransportInfo(tripJson, analysis, env = null) {
   else if (requestedMode === "all" && !options.walking && !options.driving && !transitRoute) routeError = "route_not_found";
 
   if (routeError) {
-    return {
+    const payload = {
       type: "route_calculation_failed",
       route_direction: analysis.route_direction || "unknown",
       route_mode: requestedMode,
@@ -143,8 +151,11 @@ export async function enrichWithTransportInfo(tripJson, analysis, env = null) {
       geocode_destination_error: null,
       geocode_error: null,
       route_error: routeError,
-      options
+      options,
+      cache_hit: false
     };
+    await cachePutJson(env, cacheKey, payload, 6 * 3600);
+    return payload;
   }
 
   let primary = null;
@@ -153,7 +164,7 @@ export async function enrichWithTransportInfo(tripJson, analysis, env = null) {
   else if (requestedMode === "transit") primary = options.transit;
   else primary = options.driving || options.walking || (transitRoute ? options.transit : null);
 
-  return {
+  const payload = {
     type: "calculated_route",
     route_direction: analysis.route_direction || "unknown",
     route_mode: requestedMode,
@@ -175,6 +186,9 @@ export async function enrichWithTransportInfo(tripJson, analysis, env = null) {
     geocode_destination_attempted_query: destinationGeo.attempted_queries.join(" | ") || destinationCoords.attempted_query || null,
     geocode_origin_error: null,
     geocode_destination_error: null,
-    geocode_error: null
+    geocode_error: null,
+    cache_hit: false
   };
+  await cachePutJson(env, cacheKey, payload, 12 * 3600);
+  return payload;
 }
