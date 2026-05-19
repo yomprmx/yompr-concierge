@@ -125,7 +125,8 @@ function isSystemTripKey(key) {
     key.startsWith("cache:v1:") ||
     key.startsWith("admin:sess:") ||
     key.startsWith("access:v1:") ||
-    key.startsWith("tripmeta:v1:")
+    key.startsWith("tripmeta:v1:") ||
+    key.startsWith("accesssess:v1:")
   );
 }
 
@@ -163,6 +164,42 @@ async function resolveTripByAccessCode(env, code) {
   if (!normalized) return null;
   const tripId = await env.TRIPS.get(`access:v1:${normalized}`);
   return tripId || null;
+}
+
+async function createClientAccessSession(env, tripId, accessCode) {
+  const token = crypto.randomUUID();
+  await env.TRIPS.put(`accesssess:v1:${token}`, JSON.stringify({
+    trip_id: tripId,
+    access_code: normalizeAccessCode(accessCode || ""),
+    created_at: new Date().toISOString()
+  }), { expirationTtl: 60 * 60 * 24 * 30 });
+  return token;
+}
+
+async function getClientAccessSession(request, env) {
+  const cookies = parseCookies(request);
+  const token = cookies.yompr_client_session;
+  if (!token || !env?.TRIPS) return null;
+  try {
+    const raw = await env.TRIPS.get(`accesssess:v1:${token}`);
+    if (!raw) return null;
+    const session = JSON.parse(raw);
+    if (!session?.trip_id) return null;
+    return session;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function requireTripAccess(request, env, tripId) {
+  const admin = await getAuthenticatedAdmin(request, env);
+  if (admin) return null;
+  const session = await getClientAccessSession(request, env);
+  if (session?.trip_id === tripId) return null;
+  return new Response(null, {
+    status: 302,
+    headers: { Location: "/portal" }
+  });
 }
 
 async function assignAccessCode(env, tripId, preferredCode = null) {
@@ -847,9 +884,13 @@ export default {
           headers: { "Content-Type": "text/html; charset=UTF-8" }
         });
       }
+      const token = await createClientAccessSession(env, tripId, accessCode);
       return new Response(null, {
         status: 302,
-        headers: { Location: `/v/${encodeURIComponent(tripId)}` }
+        headers: {
+          Location: `/v/${encodeURIComponent(tripId)}`,
+          "Set-Cookie": `yompr_client_session=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000`
+        }
       });
     }
 
@@ -857,9 +898,13 @@ export default {
       const accessCode = normalizeAccessCode(decodeURIComponent(url.pathname.replace("/c/", "")));
       const tripId = await resolveTripByAccessCode(env, accessCode);
       if (!tripId) return new Response("Clave inválida.", { status: 404 });
+      const token = await createClientAccessSession(env, tripId, accessCode);
       return new Response(null, {
         status: 302,
-        headers: { Location: `/v/${encodeURIComponent(tripId)}` }
+        headers: {
+          Location: `/v/${encodeURIComponent(tripId)}`,
+          "Set-Cookie": `yompr_client_session=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000`
+        }
       });
     }
 
@@ -1437,12 +1482,20 @@ export default {
     }
 
     if (url.pathname === "/api/chat" && request.method === "POST") {
-      const result = await processChatRequest(await request.json(), env);
+      const body = await request.json();
+      const tripId = String(body?.tripId || "").trim();
+      const blocked = await requireTripAccess(request, env, tripId);
+      if (blocked) {
+        return Response.json({ answer: "Acceso no autorizado. Ingresa por el portal." }, { status: 401 });
+      }
+      const result = await processChatRequest(body, env);
       return Response.json(result.payload, { status: result.status });
     }
 
     if (url.pathname.startsWith("/v/")) {
       const tripId = decodeURIComponent(url.pathname.replace("/v/", ""));
+      const blocked = await requireTripAccess(request, env, tripId);
+      if (blocked) return blocked;
       const tripText = await env.TRIPS.get(tripId);
 
       if (!tripText) {
