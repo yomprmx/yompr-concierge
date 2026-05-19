@@ -276,6 +276,7 @@ function renderClientPortal(errorText = "") {
       border-radius: 20px;
       padding: 22px;
       box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
+      overflow: hidden;
     }
     .logo-wrap { text-align: center; margin-bottom: 12px; }
     .logo-wrap img { width: 84px; height: 84px; object-fit: contain; }
@@ -297,7 +298,9 @@ function renderClientPortal(errorText = "") {
       font-size: 14px;
     }
     .access-input {
+      display: block;
       width: 100%;
+      max-width: 100%;
       padding: 15px 16px;
       border: 1px solid #d1d5db;
       border-radius: 14px;
@@ -305,6 +308,7 @@ function renderClientPortal(errorText = "") {
       font-size: 20px;
       line-height: 1.1;
       outline: none;
+      margin: 0;
       transition: border-color .14s ease, box-shadow .14s ease;
     }
     .access-input:focus {
@@ -312,11 +316,15 @@ function renderClientPortal(errorText = "") {
       box-shadow: 0 0 0 3px rgba(17, 24, 39, 0.08);
     }
     .btn {
+      display: block;
       width: 100%;
+      max-width: 100%;
       border: none;
       border-radius: 14px;
       cursor: pointer;
       font-weight: 700;
+      margin-left: 0;
+      margin-right: 0;
     }
     .btn-primary {
       margin-top: 12px;
