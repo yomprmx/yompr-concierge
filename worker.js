@@ -261,12 +261,12 @@ function renderClientPortal(errorText = "") {
       min-height: 100vh;
       min-height: 100svh;
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       justify-content: center;
       padding:
-        max(20px, calc(env(safe-area-inset-top) + 14px))
+        max(18px, calc(env(safe-area-inset-top) + 10px))
         max(16px, env(safe-area-inset-right))
-        max(24px, env(safe-area-inset-bottom))
+        max(24px, calc(env(safe-area-inset-bottom) + 8px))
         max(16px, env(safe-area-inset-left));
     }
     .card {
@@ -342,10 +342,6 @@ function renderClientPortal(errorText = "") {
       display: none;
     }
     @media (max-width: 640px) {
-      .shell {
-        align-items: flex-start;
-        padding-top: max(18px, calc(env(safe-area-inset-top) + 10px));
-      }
       .card {
         border-radius: 18px;
         padding: 18px;
@@ -359,6 +355,12 @@ function renderClientPortal(errorText = "") {
       .shell {
         align-items: flex-start;
         padding-top: max(18px, calc(env(safe-area-inset-top) + 10px));
+      }
+    }
+    @media (min-width: 900px) and (hover: hover) and (pointer: fine) {
+      .shell {
+        align-items: center;
+        padding-top: max(22px, calc(env(safe-area-inset-top) + 18px));
       }
     }
   </style>
