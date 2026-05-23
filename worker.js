@@ -1242,8 +1242,8 @@ const CHAT_CLIENT_JS = String.raw`
 `;
 
 const CLIENT_SW_JS = String.raw`
-const CACHE_NAME = "yompr-client-v1";
-const CORE_ASSETS = ["/", "/portal", "/logo-chat.png", "/appicon.png", "/offline.html"];
+const CACHE_NAME = "yompr-client-v2";
+const CORE_ASSETS = ["/portal", "/logo-chat.png", "/appicon.png", "/offline.html"];
 
 self.addEventListener("install", event => {
   event.waitUntil(
@@ -1264,6 +1264,20 @@ self.addEventListener("fetch", event => {
   if (req.method !== "GET") return;
   const url = new URL(req.url);
   if (url.pathname.startsWith("/admin")) return;
+
+  const isDynamicRoute =
+    url.pathname.startsWith("/v/") ||
+    url.pathname.startsWith("/api/") ||
+    url.pathname === "/" ||
+    url.pathname === "/portal";
+
+  if (isDynamicRoute) {
+    event.respondWith(
+      fetch(req).catch(() => caches.match("/offline.html"))
+    );
+    return;
+  }
+
   event.respondWith(
     caches.match(req).then(cached => {
       if (cached) return cached;
