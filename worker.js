@@ -7,6 +7,14 @@ import { enrichWithWeatherInfo } from "./src/weather.js";
 import { saveChatLog } from "./src/logging.js";
 import { fetchWikipediaContext } from "./src/wiki.js";
 
+const CLIENT_SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
+const CLIENT_SESSION_IDLE_MS = 36 * 60 * 60 * 1000;
+const PRIVACY_CONSENT_TTL_SECONDS = 60 * 60 * 24 * 60;
+const PRIVACY_REASK_BASE_MS = 24 * 60 * 60 * 1000;
+const PRIVACY_REASK_CONTINUOUS_MS = 48 * 60 * 60 * 1000;
+const PRIVACY_CONTINUOUS_GAP_MS = 6 * 60 * 60 * 1000;
+const PRIVACY_POLICY_VERSION = "2026-05-v1";
+
 function normalizeWrappedUrls(text) {
   if (!text) return text;
 
@@ -127,7 +135,8 @@ function isSystemTripKey(key) {
     key.startsWith("admin:sess:") ||
     key.startsWith("access:v1:") ||
     key.startsWith("tripmeta:v1:") ||
-    key.startsWith("accesssess:v1:")
+    key.startsWith("accesssess:v1:") ||
+    key.startsWith("privacy:v1:")
   );
 }
 
@@ -169,11 +178,13 @@ async function resolveTripByAccessCode(env, code) {
 
 async function createClientAccessSession(env, tripId, accessCode) {
   const token = crypto.randomUUID();
+  const nowIso = new Date().toISOString();
   await env.TRIPS.put(`accesssess:v1:${token}`, JSON.stringify({
     trip_id: tripId,
     access_code: normalizeAccessCode(accessCode || ""),
-    created_at: new Date().toISOString()
-  }), { expirationTtl: 60 * 60 * 24 * 30 });
+    created_at: nowIso,
+    last_activity_at: nowIso
+  }), { expirationTtl: CLIENT_SESSION_TTL_SECONDS });
   return token;
 }
 
@@ -186,9 +197,101 @@ async function getClientAccessSession(request, env) {
     if (!raw) return null;
     const session = JSON.parse(raw);
     if (!session?.trip_id) return null;
-    return session;
+    const lastActivityMs = Date.parse(session.last_activity_at || session.created_at || "");
+    if (!Number.isFinite(lastActivityMs)) {
+      await env.TRIPS.delete(`accesssess:v1:${token}`).catch(() => {});
+      return null;
+    }
+    if (Date.now() - lastActivityMs > CLIENT_SESSION_IDLE_MS) {
+      await env.TRIPS.delete(`accesssess:v1:${token}`).catch(() => {});
+      return null;
+    }
+    return { ...session, token };
   } catch (_) {
     return null;
+  }
+}
+
+async function touchClientAccessSession(env, session) {
+  if (!env?.TRIPS || !session?.token || !session?.trip_id) return;
+  const updated = {
+    ...session,
+    last_activity_at: new Date().toISOString()
+  };
+  delete updated.token;
+  await env.TRIPS.put(`accesssess:v1:${session.token}`, JSON.stringify(updated), {
+    expirationTtl: CLIENT_SESSION_TTL_SECONDS
+  });
+}
+
+async function clearClientAccessSession(request, env) {
+  const cookies = parseCookies(request);
+  const token = cookies.yompr_client_session;
+  if (!token || !env?.TRIPS) return;
+  await env.TRIPS.delete(`accesssess:v1:${token}`).catch(() => {});
+}
+
+async function getPrivacyConsent(request, env) {
+  const cookies = parseCookies(request);
+  const token = cookies.yompr_privacy_token;
+  if (!token || !env?.TRIPS) return null;
+  try {
+    const raw = await env.TRIPS.get(`privacy:v1:${token}`);
+    if (!raw) return null;
+    const payload = JSON.parse(raw);
+    if (!payload?.trip_id || !payload?.accepted_at) return null;
+    return { ...payload, token };
+  } catch (_) {
+    return null;
+  }
+}
+
+function getPrivacyReaskWindowMs(consent) {
+  const acceptedMs = Date.parse(consent?.accepted_at || "");
+  const lastSeenMs = Date.parse(consent?.last_seen_at || consent?.accepted_at || "");
+  if (!Number.isFinite(acceptedMs)) return 0;
+  const nowMs = Date.now();
+  const isContinuous = Number.isFinite(lastSeenMs) && (nowMs - lastSeenMs) <= PRIVACY_CONTINUOUS_GAP_MS;
+  return isContinuous ? PRIVACY_REASK_CONTINUOUS_MS : PRIVACY_REASK_BASE_MS;
+}
+
+function isPrivacyConsentValid(consent, tripId) {
+  if (!consent || !tripId) return false;
+  if (consent.trip_id !== tripId) return false;
+  if (consent.policy_version !== PRIVACY_POLICY_VERSION) return false;
+  const acceptedMs = Date.parse(consent.accepted_at || "");
+  if (!Number.isFinite(acceptedMs)) return false;
+  return (Date.now() - acceptedMs) <= getPrivacyReaskWindowMs(consent);
+}
+
+async function touchPrivacyConsent(env, consent) {
+  if (!env?.TRIPS || !consent?.token) return;
+  const updated = {
+    ...consent,
+    last_seen_at: new Date().toISOString()
+  };
+  delete updated.token;
+  await env.TRIPS.put(`privacy:v1:${consent.token}`, JSON.stringify(updated), {
+    expirationTtl: PRIVACY_CONSENT_TTL_SECONDS
+  });
+}
+
+async function createPrivacyConsent(env, tripId) {
+  const token = crypto.randomUUID();
+  const nowIso = new Date().toISOString();
+  await env.TRIPS.put(`privacy:v1:${token}`, JSON.stringify({
+    trip_id: tripId,
+    policy_version: PRIVACY_POLICY_VERSION,
+    accepted_at: nowIso,
+    last_seen_at: nowIso
+  }), { expirationTtl: PRIVACY_CONSENT_TTL_SECONDS });
+  return token;
+}
+
+async function clearPrivacyConsent(env, request) {
+  const current = await getPrivacyConsent(request, env);
+  if (current?.token) {
+    await env.TRIPS.delete(`privacy:v1:${current.token}`).catch(() => {});
   }
 }
 
@@ -196,10 +299,16 @@ async function requireTripAccess(request, env, tripId) {
   const admin = await getAuthenticatedAdmin(request, env);
   if (admin) return null;
   const session = await getClientAccessSession(request, env);
-  if (session?.trip_id === tripId) return null;
+  if (session?.trip_id === tripId) {
+    await touchClientAccessSession(env, session).catch(() => {});
+    return null;
+  }
   return new Response(null, {
     status: 302,
-    headers: { Location: "/portal" }
+    headers: {
+      Location: "/portal",
+      "Set-Cookie": "yompr_client_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0"
+    }
   });
 }
 
@@ -1045,6 +1154,10 @@ const CHAT_CLIENT_JS = String.raw`
   const questionInput = document.getElementById("question");
   const sendButton = document.getElementById("sendButton");
   const messages = document.getElementById("messages");
+  const privacyOverlay = document.getElementById("privacyOverlay");
+  const privacyAccept = document.getElementById("privacyAccept");
+  const privacyDecline = document.getElementById("privacyDecline");
+  const privacyRequired = appRoot && appRoot.dataset ? appRoot.dataset.privacyRequired === "1" : false;
 
   if (!tripId || !questionInput || !sendButton || !messages) return;
 
@@ -1176,6 +1289,45 @@ const CHAT_CLIENT_JS = String.raw`
     messages.appendChild(row);
     scrollToBottom();
     return row;
+  }
+
+  function lockComposer(locked) {
+    questionInput.disabled = locked;
+    sendButton.disabled = locked;
+  }
+
+  function showPrivacyOverlay() {
+    if (!privacyOverlay) return;
+    privacyOverlay.classList.add("visible");
+    privacyOverlay.setAttribute("aria-hidden", "false");
+    lockComposer(true);
+  }
+
+  function hidePrivacyOverlay() {
+    if (!privacyOverlay) return;
+    privacyOverlay.classList.remove("visible");
+    privacyOverlay.setAttribute("aria-hidden", "true");
+    lockComposer(false);
+  }
+
+  async function acceptPrivacyPolicy() {
+    const res = await fetch("/api/privacy/accept", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tripId: tripId })
+    });
+    if (!res.ok) {
+      throw new Error("No se pudo guardar tu consentimiento.");
+    }
+  }
+
+  async function rejectPrivacyPolicy() {
+    await fetch("/api/privacy/reject", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tripId: tripId })
+    }).catch(() => {});
+    window.location.href = "/portal";
   }
 
   function scrollToBottom() {
@@ -1376,6 +1528,12 @@ const CHAT_CLIENT_JS = String.raw`
       let res = await sendChat(initialLocation, initialTriggered, initialPermissionState, initialRetry);
       let data = await res.json();
 
+      if (data && data.requires_privacy_consent) {
+        thinkingRow.remove();
+        showPrivacyOverlay();
+        return;
+      }
+
       if (res.ok && data && data.requires_location) {
         const canAutoRetry = hasActiveGpsConsent();
         if (canAutoRetry) {
@@ -1458,9 +1616,11 @@ const CHAT_CLIENT_JS = String.raw`
       addMessage("assistant", "Error de conexión: " + error.message);
     } finally {
       isSending = false;
-      questionInput.disabled = false;
-      sendButton.disabled = false;
-      questionInput.focus();
+      if (!privacyOverlay || !privacyOverlay.classList.contains("visible")) {
+        questionInput.disabled = false;
+        sendButton.disabled = false;
+        questionInput.focus();
+      }
       scrollToBottom();
     }
   }
@@ -1483,6 +1643,33 @@ const CHAT_CLIENT_JS = String.raw`
   }
   questionInput.addEventListener("focus", () => setTimeout(syncViewportHeight, 30));
   questionInput.addEventListener("blur", () => setTimeout(syncViewportHeight, 30));
+
+  if (privacyAccept) {
+    privacyAccept.addEventListener("click", async function() {
+      privacyAccept.disabled = true;
+      privacyDecline.disabled = true;
+      privacyAccept.textContent = "Guardando...";
+      try {
+        await acceptPrivacyPolicy();
+        hidePrivacyOverlay();
+        addMessage("assistant", "Gracias. Ya puedes usar el chat con normalidad.");
+      } catch (err) {
+        addMessage("assistant", "No pude registrar tu consentimiento. Intenta nuevamente.");
+      } finally {
+        privacyAccept.disabled = false;
+        privacyDecline.disabled = false;
+        privacyAccept.textContent = "Acepto y continuar";
+      }
+    });
+  }
+
+  if (privacyDecline) {
+    privacyDecline.addEventListener("click", rejectPrivacyPolicy);
+  }
+
+  if (privacyRequired) {
+    showPrivacyOverlay();
+  }
 
   scrollToBottom();
 })();
@@ -1559,12 +1746,13 @@ export default {
         });
       }
       const token = await createClientAccessSession(env, tripId, accessCode);
+      const headers = new Headers();
+      headers.set("Location", `/v/${encodeURIComponent(tripId)}`);
+      headers.append("Set-Cookie", `yompr_client_session=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${CLIENT_SESSION_TTL_SECONDS}`);
+      headers.append("Set-Cookie", "yompr_privacy_token=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0");
       return new Response(null, {
         status: 302,
-        headers: {
-          Location: `/v/${encodeURIComponent(tripId)}`,
-          "Set-Cookie": `yompr_client_session=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000`
-        }
+        headers
       });
     }
 
@@ -1573,12 +1761,13 @@ export default {
       const tripId = await resolveTripByAccessCode(env, accessCode);
       if (!tripId) return new Response("Clave inválida.", { status: 404 });
       const token = await createClientAccessSession(env, tripId, accessCode);
+      const headers = new Headers();
+      headers.set("Location", `/v/${encodeURIComponent(tripId)}`);
+      headers.append("Set-Cookie", `yompr_client_session=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${CLIENT_SESSION_TTL_SECONDS}`);
+      headers.append("Set-Cookie", "yompr_privacy_token=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0");
       return new Response(null, {
         status: 302,
-        headers: {
-          Location: `/v/${encodeURIComponent(tripId)}`,
-          "Set-Cookie": `yompr_client_session=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000`
-        }
+        headers
       });
     }
 
@@ -2233,6 +2422,49 @@ export default {
       }
     }
 
+    if (url.pathname === "/api/privacy/accept" && request.method === "POST") {
+      const body = await request.json().catch(() => ({}));
+      const tripId = String(body?.tripId || "").trim();
+      const blocked = await requireTripAccess(request, env, tripId);
+      if (blocked) {
+        return Response.json({ success: false, message: "Acceso no autorizado." }, { status: 401 });
+      }
+      const token = await createPrivacyConsent(env, tripId);
+      return new Response(JSON.stringify({
+        success: true,
+        message: "Aviso de privacidad aceptado.",
+        policy_version: PRIVACY_POLICY_VERSION
+      }), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json; charset=UTF-8",
+          "Set-Cookie": `yompr_privacy_token=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${PRIVACY_CONSENT_TTL_SECONDS}`
+        }
+      });
+    }
+
+    if (url.pathname === "/api/privacy/reject" && request.method === "POST") {
+      const body = await request.json().catch(() => ({}));
+      const tripId = String(body?.tripId || "").trim();
+      const blocked = await requireTripAccess(request, env, tripId);
+      if (blocked) {
+        return Response.json({ success: false, message: "Acceso no autorizado." }, { status: 401 });
+      }
+      await clearPrivacyConsent(env, request).catch(() => {});
+      await clearClientAccessSession(request, env).catch(() => {});
+      const headers = new Headers();
+      headers.set("Content-Type", "application/json; charset=UTF-8");
+      headers.append("Set-Cookie", "yompr_privacy_token=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0");
+      headers.append("Set-Cookie", "yompr_client_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0");
+      return new Response(JSON.stringify({
+        success: true,
+        redirect_to: "/portal"
+      }), {
+        status: 200,
+        headers
+      });
+    }
+
     if (url.pathname === "/api/chat" && request.method === "POST") {
       const body = await request.json();
       const tripId = String(body?.tripId || "").trim();
@@ -2240,6 +2472,14 @@ export default {
       if (blocked) {
         return Response.json({ answer: "Acceso no autorizado. Ingresa por el portal." }, { status: 401 });
       }
+      const privacyConsent = await getPrivacyConsent(request, env);
+      if (!isPrivacyConsentValid(privacyConsent, tripId)) {
+        return Response.json({
+          answer: "Para continuar, necesito que aceptes el aviso de privacidad.",
+          requires_privacy_consent: true
+        }, { status: 451 });
+      }
+      await touchPrivacyConsent(env, privacyConsent).catch(() => {});
       const result = await processChatRequest(body, env);
       return Response.json(result.payload, { status: result.status });
     }
@@ -2248,6 +2488,11 @@ export default {
       const tripId = decodeURIComponent(url.pathname.replace("/v/", ""));
       const blocked = await requireTripAccess(request, env, tripId);
       if (blocked) return blocked;
+      const privacyConsent = await getPrivacyConsent(request, env);
+      const needsPrivacyConsent = !isPrivacyConsentValid(privacyConsent, tripId);
+      if (!needsPrivacyConsent) {
+        await touchPrivacyConsent(env, privacyConsent).catch(() => {});
+      }
       const tripText = await env.TRIPS.get(tripId);
 
       if (!tripText) {
@@ -2308,6 +2553,7 @@ export default {
       height: var(--vvh);
       max-height: 100%;
       background: #ffffff;
+      position: relative;
       display: flex;
       flex-direction: column;
       border-left: 1px solid #e5e7eb;
@@ -2473,6 +2719,71 @@ export default {
       cursor: not-allowed;
     }
 
+    .privacy-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.52);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+      z-index: 50;
+    }
+
+    .privacy-overlay.visible {
+      display: flex;
+    }
+
+    .privacy-card {
+      width: 100%;
+      max-width: 560px;
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: 0 18px 44px rgba(15, 23, 42, 0.22);
+    }
+
+    .privacy-card h2 {
+      margin: 0 0 8px;
+      font-size: 20px;
+      color: #111827;
+    }
+
+    .privacy-card p {
+      margin: 0 0 10px;
+      color: #374151;
+      line-height: 1.5;
+      font-size: 14px;
+    }
+
+    .privacy-actions {
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+      margin-top: 12px;
+      flex-wrap: wrap;
+    }
+
+    .privacy-btn {
+      border: none;
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .privacy-btn.primary {
+      background: #111827;
+      color: #fff;
+    }
+
+    .privacy-btn.secondary {
+      background: #e5e7eb;
+      color: #111827;
+    }
+
     .typing {
       display: inline-flex;
       align-items: center;
@@ -2549,12 +2860,25 @@ export default {
         min-width: 90px;
         padding: 0 14px;
       }
+
+      .privacy-card {
+        border-radius: 14px;
+        padding: 14px;
+      }
+
+      .privacy-actions {
+        flex-direction: column-reverse;
+      }
+
+      .privacy-btn {
+        width: 100%;
+      }
     }
   </style>
 </head>
 
 <body>
-  <div class="app" id="appRoot" data-trip-id="${escapeHtml(tripId)}" data-chat-version="v11">
+  <div class="app" id="appRoot" data-trip-id="${escapeHtml(tripId)}" data-chat-version="v12" data-privacy-required="${needsPrivacyConsent ? "1" : "0"}">
     <div class="header">
       <div class="brand">
         <img src="/logo-chat.png" alt="Yompr Chat" />
@@ -2583,6 +2907,19 @@ export default {
         onkeydown="window.YOMPR_CHAT_KEY && window.YOMPR_CHAT_KEY(event)"
       />
       <button id="sendButton" type="button" onclick="window.YOMPR_CHAT_ASK && window.YOMPR_CHAT_ASK(event)">Enviar</button>
+    </div>
+
+    <div id="privacyOverlay" class="privacy-overlay" aria-hidden="true">
+      <div class="privacy-card">
+        <h2>Aviso de privacidad</h2>
+        <p>Para usar este chat necesitamos tu autorización para tratar datos personales y datos de uso del servicio.</p>
+        <p>Podemos procesar información de tu viaje, mensajes del chat, ubicación (solo cuando la compartes) y resultados obtenidos de Google, Wikipedia y datos proporcionados por nuestra agencia.</p>
+        <p>Si no estás de acuerdo, no podremos habilitar el chat y te llevaremos al portal principal.</p>
+        <div class="privacy-actions">
+          <button id="privacyDecline" type="button" class="privacy-btn secondary">No acepto</button>
+          <button id="privacyAccept" type="button" class="privacy-btn primary">Acepto y continuar</button>
+        </div>
+      </div>
     </div>
   </div>
   <script>
