@@ -995,6 +995,40 @@ const CHAT_CLIENT_JS = String.raw`
     scrollToBottom();
   }
 
+  function addLocationRequestCard(onShareLocation) {
+    const row = document.createElement("div");
+    row.className = "message-row assistant";
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+    bubble.style.cssText = "max-width:520px;";
+
+    const text = document.createElement("div");
+    text.textContent = "Para buscar opciones realmente cerca de ti, comparte tu ubicación actual.";
+    text.style.marginBottom = "8px";
+    bubble.appendChild(text);
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "Compartir ubicación";
+    btn.style.cssText = "background:#0f172a;color:#fff;border:none;border-radius:10px;padding:8px 12px;font-size:13px;cursor:pointer;";
+    btn.addEventListener("click", async function() {
+      btn.disabled = true;
+      btn.textContent = "Solicitando permiso...";
+      try {
+        await onShareLocation();
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Compartir ubicación";
+      }
+    });
+    bubble.appendChild(btn);
+
+    row.appendChild(bubble);
+    messages.appendChild(row);
+    scrollToBottom();
+    return row;
+  }
+
   function scrollToBottom() {
     messages.scrollTop = messages.scrollHeight;
   }
@@ -1131,9 +1165,29 @@ const CHAT_CLIENT_JS = String.raw`
       let data = await res.json();
 
       if (res.ok && data && data.requires_location) {
-        const locationResult = await getCurrentLocation();
-        res = await sendChat(locationResult.coords, true, locationResult.permissionState, true);
-        data = await res.json();
+        thinkingRow.remove();
+        let requestRow = null;
+        requestRow = addLocationRequestCard(async function() {
+          const locationResult = await getCurrentLocation();
+          const retryRes = await sendChat(locationResult.coords, true, locationResult.permissionState, true);
+          const retryData = await retryRes.json();
+          if (requestRow) requestRow.remove();
+
+          if (!retryRes.ok) {
+            const errorText = "Error: " + (retryData.answer || retryData.message || JSON.stringify(retryData));
+            addMessage("assistant", errorText);
+            return;
+          }
+          const answer2 = retryData.answer || "No recibí respuesta.";
+          addMessage("assistant", answer2);
+          if (retryData.location_source === "user_location") {
+            addLocationBadge();
+          }
+          conversationHistory.push({ role: "user", content: question });
+          conversationHistory.push({ role: "assistant", content: answer2 });
+          conversationHistory = conversationHistory.slice(-8);
+        });
+        return;
       }
 
       thinkingRow.remove();
