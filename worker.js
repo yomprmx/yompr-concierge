@@ -1213,7 +1213,38 @@ const CHAT_CLIENT_JS = String.raw`
   function renderBubbleRichContent(bubble, content) {
     bubble.textContent = "";
     var urlRe = /https?:\/\/[^\s<>]+|(?:maps|www)[.]google[.]com\/[^\s<>]+|goo[.]gl\/[^\s<>]+/g;
-    var trailRe = /[.,;:!?)]+$/;
+
+    function countChar(text, ch) {
+      var total = 0;
+      for (var i = 0; i < text.length; i++) if (text[i] === ch) total++;
+      return total;
+    }
+
+    function splitUrlToken(token) {
+      var end = token.length;
+      var trailing = "";
+      while (end > 0) {
+        var ch = token[end - 1];
+        if (/[.,;:!?]/.test(ch)) {
+          trailing = ch + trailing;
+          end--;
+          continue;
+        }
+        if (ch === ")" || ch === "]" || ch === "}") {
+          var head = token.slice(0, end);
+          var opens = ch === ")" ? countChar(head, "(") : (ch === "]" ? countChar(head, "[") : countChar(head, "{"));
+          var closes = ch === ")" ? countChar(head, ")") : (ch === "]" ? countChar(head, "]") : countChar(head, "}"));
+          if (closes > opens) {
+            trailing = ch + trailing;
+            end--;
+            continue;
+          }
+        }
+        break;
+      }
+      return { url: token.slice(0, end), trailing: trailing };
+    }
+
     var lastIdx = 0;
     var um;
     urlRe.lastIndex = 0;
@@ -1222,7 +1253,8 @@ const CHAT_CLIENT_JS = String.raw`
       if (um.index > lastIdx) {
         appendStyledText(bubble, content.slice(lastIdx, um.index));
       }
-      var rawUrl = um[0].replace(trailRe, "");
+      var split = splitUrlToken(um[0]);
+      var rawUrl = split.url;
       var hrefUrl = rawUrl.indexOf("http") === 0 ? rawUrl : "https://" + rawUrl;
 
       var a = document.createElement("a");
@@ -1237,6 +1269,9 @@ const CHAT_CLIENT_JS = String.raw`
       a.textContent = isMaps ? "Ver en Google Maps" : "Abrir enlace";
       a.style.cssText = "color:#3b82f6;text-decoration:underline;font-weight:500;";
       bubble.appendChild(a);
+      if (split.trailing) {
+        appendStyledText(bubble, split.trailing);
+      }
 
       lastIdx = um.index + um[0].length;
     }
