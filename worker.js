@@ -981,6 +981,8 @@ const CHAT_CLIENT_JS = String.raw`
 
   let conversationHistory = [];
   let isSending = false;
+  const GPS_CONSENT_KEY = "yompr_gps_consent_until";
+  const GPS_CONSENT_TTL_MS = 24 * 60 * 60 * 1000;
 
   function syncViewportHeight() {
     const vv = window.visualViewport;
@@ -1033,6 +1035,28 @@ const CHAT_CLIENT_JS = String.raw`
         }
       );
     });
+  }
+
+  function hasActiveGpsConsent() {
+    try {
+      const raw = localStorage.getItem(GPS_CONSENT_KEY);
+      const expiresAt = raw ? Number(raw) : 0;
+      return Number.isFinite(expiresAt) && Date.now() < expiresAt;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function setGpsConsentActive() {
+    try {
+      localStorage.setItem(GPS_CONSENT_KEY, String(Date.now() + GPS_CONSENT_TTL_MS));
+    } catch (_) {}
+  }
+
+  function clearGpsConsent() {
+    try {
+      localStorage.removeItem(GPS_CONSENT_KEY);
+    } catch (_) {}
   }
 
   function addLocationBadge() {
@@ -1215,18 +1239,34 @@ const CHAT_CLIENT_JS = String.raw`
     }
 
     try {
-      let res = await sendChat(null, false, "not_requested", false);
+      let initialLocation = null;
+      let initialPermissionState = "not_requested";
+      let initialTriggered = false;
+      let initialRetry = false;
+
+      if (hasActiveGpsConsent()) {
+        const locationResult = await getCurrentLocation();
+        initialLocation = locationResult.coords;
+        initialPermissionState = locationResult.permissionState;
+        initialTriggered = true;
+        initialRetry = true;
+        if (locationResult.permissionState === "granted" && locationResult.coords) {
+          setGpsConsentActive();
+        } else if (locationResult.permissionState !== "not_requested") {
+          clearGpsConsent();
+        }
+      }
+
+      let res = await sendChat(initialLocation, initialTriggered, initialPermissionState, initialRetry);
       let data = await res.json();
 
       if (res.ok && data && data.requires_location) {
-        thinkingRow.remove();
-        let requestRow = null;
-        requestRow = addLocationRequestCard(async function() {
+        const canAutoRetry = hasActiveGpsConsent();
+        if (canAutoRetry) {
           const locationResult = await getCurrentLocation();
           const retryRes = await sendChat(locationResult.coords, true, locationResult.permissionState, true);
           const retryData = await retryRes.json();
-          if (requestRow) requestRow.remove();
-
+          thinkingRow.remove();
           if (!retryRes.ok) {
             const errorText = "Error: " + (retryData.answer || retryData.message || JSON.stringify(retryData));
             addMessage("assistant", errorText);
@@ -1234,8 +1274,10 @@ const CHAT_CLIENT_JS = String.raw`
           }
           const answer2 = retryData.answer || "No recibí respuesta.";
           addMessage("assistant", answer2);
-          if (locationResult.permissionState !== "granted") {
-            addMessage("assistant", "No se obtuvo permiso de ubicación (" + locationResult.permissionState + ").");
+          if (locationResult.permissionState === "granted" && locationResult.coords) {
+            setGpsConsentActive();
+          } else {
+            clearGpsConsent();
           }
           if (retryData.location_source === "user_location") {
             addLocationBadge();
@@ -1243,8 +1285,40 @@ const CHAT_CLIENT_JS = String.raw`
           conversationHistory.push({ role: "user", content: question });
           conversationHistory.push({ role: "assistant", content: answer2 });
           conversationHistory = conversationHistory.slice(-8);
-        });
-        return;
+          return;
+        } else {
+          thinkingRow.remove();
+          let requestRow = null;
+          requestRow = addLocationRequestCard(async function() {
+            const locationResult = await getCurrentLocation();
+            const retryRes = await sendChat(locationResult.coords, true, locationResult.permissionState, true);
+            const retryData = await retryRes.json();
+            if (requestRow) requestRow.remove();
+
+            if (!retryRes.ok) {
+              const errorText = "Error: " + (retryData.answer || retryData.message || JSON.stringify(retryData));
+              addMessage("assistant", errorText);
+              return;
+            }
+            const answer2 = retryData.answer || "No recibí respuesta.";
+            addMessage("assistant", answer2);
+            if (locationResult.permissionState === "granted" && locationResult.coords) {
+              setGpsConsentActive();
+            } else {
+              clearGpsConsent();
+              if (locationResult.permissionState !== "not_requested") {
+                addMessage("assistant", "No se obtuvo permiso de ubicación (" + locationResult.permissionState + ").");
+              }
+            }
+            if (retryData.location_source === "user_location") {
+              addLocationBadge();
+            }
+            conversationHistory.push({ role: "user", content: question });
+            conversationHistory.push({ role: "assistant", content: answer2 });
+            conversationHistory = conversationHistory.slice(-8);
+          });
+          return;
+        }
       }
 
       thinkingRow.remove();
