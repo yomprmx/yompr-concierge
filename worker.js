@@ -14,6 +14,7 @@ const PRIVACY_REASK_BASE_MS = 24 * 60 * 60 * 1000;
 const PRIVACY_REASK_CONTINUOUS_MS = 48 * 60 * 60 * 1000;
 const PRIVACY_CONTINUOUS_GAP_MS = 6 * 60 * 60 * 1000;
 const PRIVACY_POLICY_VERSION = "2026-05-v1";
+const CHAT_WELCOME_MESSAGE = "Bienvenidos. Soy Tho, su concierge privado de Yompr. Estoy aquí para acompañar cada etapa de su viaje con recomendaciones precisas, logística clara y atención cuidada al detalle. ¿Qué les gustaría resolver primero?";
 
 function normalizeWrappedUrls(text) {
   if (!text) return text;
@@ -838,6 +839,13 @@ async function processChatRequest(body, env) {
             content: `
 Eres Yompr Personal Concierge, un asistente de viaje premium. Responde en español amable, cálido, profesional, claro, natural y elegante, como el mejor asistente personal del mundo.
 
+Identidad y presencia:
+- Tu nombre es Tho, concierge privado de Yompr.
+- Estás inspirado en una inteligencia sabia, observadora y resolutiva.
+- Tu tono combina lujo contemporáneo, hospitalidad refinada, inteligencia tranquila y atención obsesiva al detalle.
+- Comunícate de forma elegante, humana y fluida; nunca robótica ni rígida.
+- Mantén una calidez sobria: exclusivo pero cercano, preciso sin sonar frío.
+
 Usa solo la información del viaje proporcionada y los datos calculados en transport_info. Si no sabes algo con certeza, dilo. No inventes datos.
 
 La respuesta debe ser concisa, lógica y responder lo que el cliente necesita sin hacerla innecesariamente extensa.
@@ -1158,6 +1166,7 @@ const CHAT_CLIENT_JS = String.raw`
   const privacyAccept = document.getElementById("privacyAccept");
   const privacyDecline = document.getElementById("privacyDecline");
   const privacyRequired = appRoot && appRoot.dataset ? appRoot.dataset.privacyRequired === "1" : false;
+  const welcomeMessage = typeof window.YOMPR_WELCOME_MESSAGE === "string" ? window.YOMPR_WELCOME_MESSAGE : "Bienvenidos. Soy Tho, su concierge privado de Yompr.";
 
   if (!tripId || !questionInput || !sendButton || !messages) return;
 
@@ -1652,7 +1661,10 @@ const CHAT_CLIENT_JS = String.raw`
       try {
         await acceptPrivacyPolicy();
         hidePrivacyOverlay();
-        addMessage("assistant", "Gracias. Ya puedes usar el chat con normalidad.");
+        if (!messages.querySelector(".message-row")) {
+          addMessage("assistant", welcomeMessage, "", { fadeIn: true, scrollToStart: true });
+        }
+        questionInput.focus();
       } catch (err) {
         addMessage("assistant", "No pude registrar tu consentimiento. Intenta nuevamente.");
       } finally {
@@ -2722,7 +2734,8 @@ export default {
     .privacy-overlay {
       position: absolute;
       inset: 0;
-      background: rgba(15, 23, 42, 0.52);
+      background: rgba(255, 255, 255, 0.96);
+      backdrop-filter: blur(2px);
       display: none;
       align-items: center;
       justify-content: center;
@@ -2894,9 +2907,11 @@ export default {
     </div>
 
     <div id="messages" class="messages">
+      ${needsPrivacyConsent ? "" : `
       <div class="message-row assistant">
-        <div class="bubble">Hola, soy tu concierge personal de Yompr. Puedes preguntarme sobre vuelos, hospedaje, actividades, traslados o recomendaciones de tu viaje.</div>
+        <div class="bubble">${escapeHtml(CHAT_WELCOME_MESSAGE)}</div>
       </div>
+      `}
     </div>
 
     <div id="composer" class="composer">
@@ -2912,9 +2927,9 @@ export default {
     <div id="privacyOverlay" class="privacy-overlay" aria-hidden="true">
       <div class="privacy-card">
         <h2>Aviso de privacidad</h2>
-        <p>Para usar este chat necesitamos tu autorización para tratar datos personales y datos de uso del servicio.</p>
-        <p>Podemos procesar información de tu viaje, mensajes del chat, ubicación (solo cuando la compartes) y resultados obtenidos de Google, Wikipedia y datos proporcionados por nuestra agencia.</p>
-        <p>Si no estás de acuerdo, no podremos habilitar el chat y te llevaremos al portal principal.</p>
+        <p>Para habilitar tu concierge digital, necesitamos tu autorización para el tratamiento de datos personales y de uso del servicio.</p>
+        <p>Durante la experiencia podemos procesar información del viaje, mensajes del chat, ubicación (solo cuando la compartes) y contenido obtenido desde Google, Wikipedia y datos proporcionados por nuestra agencia.</p>
+        <p>Si no aceptas este aviso, no podremos activar el chat y te regresaremos al portal principal.</p>
         <div class="privacy-actions">
           <button id="privacyDecline" type="button" class="privacy-btn secondary">No acepto</button>
           <button id="privacyAccept" type="button" class="privacy-btn primary">Acepto y continuar</button>
@@ -2922,6 +2937,9 @@ export default {
       </div>
     </div>
   </div>
+  <script>
+    window.YOMPR_WELCOME_MESSAGE = ${JSON.stringify(CHAT_WELCOME_MESSAGE)};
+  </script>
   <script>
 ${CHAT_CLIENT_JS}
   </script>
