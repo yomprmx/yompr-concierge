@@ -457,8 +457,15 @@ function shouldRequestGpsForRecommendation(analysis, question) {
 function shouldUseWikipedia(analysis, question) {
   if (analysis?.wiki_needed) return true;
   if (analysis?.tool_needed === "wiki") return true;
+  if (analysis?.wiki_query) return true;
   const q = normalizeText(question || "");
   return (
+    q.includes("hablame de") ||
+    q.includes("háblame de") ||
+    q.includes("que es") ||
+    q.includes("qué es") ||
+    q.includes("quien fue") ||
+    q.includes("quién fue") ||
     q.includes("historia") ||
     q.includes("historico") ||
     q.includes("histórico") ||
@@ -817,6 +824,8 @@ Clima:
 Wikipedia (guía urbano/histórica/artística):
 - Si context.wikipedia_info existe y found=true, úsalo como FUENTE PRINCIPAL para datos urbanos, históricos, artísticos, culturales o de contexto del lugar.
 - Prioriza title, description y extract de wikipedia_info para responder esos temas.
+- Para preguntas como "háblame de...", "historia de...", "qué es...", "por qué es importante...", entrega un resumen corto e interesante (4-7 líneas) de lo más relevante.
+- Incluye 1 dato memorable o curioso cuando esté implícito en el extract.
 - Si wikipedia_info.content_urls.desktop existe, compártelo como enlace para ampliar.
 - Si wikipedia_info.found=false o tiene error, dilo breve y responde con conocimiento general prudente sin inventar hechos específicos.
 - No atribuyas a Wikipedia datos que no estén en wikipedia_info.
