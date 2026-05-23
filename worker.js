@@ -1516,25 +1516,9 @@ const CHAT_CLIENT_JS = String.raw`
     }
 
     try {
-      let initialLocation = null;
-      let initialPermissionState = "not_requested";
-      let initialTriggered = false;
-      let initialRetry = false;
-
-      if (hasActiveGpsConsent()) {
-        const locationResult = await getCurrentLocation();
-        initialLocation = locationResult.coords;
-        initialPermissionState = locationResult.permissionState;
-        initialTriggered = true;
-        initialRetry = true;
-        if (locationResult.permissionState === "granted" && locationResult.coords) {
-          setGpsConsentActive();
-        } else if (locationResult.permissionState !== "not_requested") {
-          clearGpsConsent();
-        }
-      }
-
-      let res = await sendChat(initialLocation, initialTriggered, initialPermissionState, initialRetry);
+      // Política de privacidad: no enviar ubicación por defecto.
+      // Primero consultamos sin GPS y solo si el backend lo pide, hacemos retry con ubicación.
+      let res = await sendChat(null, false, "not_requested", false);
       let data = await res.json();
 
       if (data && data.requires_privacy_consent) {
