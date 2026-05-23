@@ -1116,6 +1116,10 @@ const CHAT_CLIENT_JS = String.raw`
     messages.scrollTop = messages.scrollHeight;
   }
 
+  function scrollToMessageStart(row) {
+    messages.scrollTop = Math.max(0, row.offsetTop - 8);
+  }
+
   function appendStyledText(container, text) {
     var boldRe = /[*][*]([^*]+)[*][*]/g;
     var lines = text.split("\n");
@@ -1140,13 +1144,8 @@ const CHAT_CLIENT_JS = String.raw`
     }
   }
 
-  function addMessage(role, content, extraClass) {
-    const row = document.createElement("div");
-    row.className = "message-row " + role;
-
-    const bubble = document.createElement("div");
-    bubble.className = "bubble" + (extraClass ? " " + extraClass : "");
-
+  function renderBubbleRichContent(bubble, content) {
+    bubble.textContent = "";
     var urlRe = /https?:\/\/[^\s<>]+|(?:maps|www)[.]google[.]com\/[^\s<>]+|goo[.]gl\/[^\s<>]+/g;
     var trailRe = /[.,;:!?)]+$/;
     var lastIdx = 0;
@@ -1179,10 +1178,42 @@ const CHAT_CLIENT_JS = String.raw`
     if (lastIdx < content.length) {
       appendStyledText(bubble, content.slice(lastIdx));
     }
+  }
+
+  function addMessage(role, content, extraClass, options) {
+    const opts = options || {};
+    const row = document.createElement("div");
+    row.className = "message-row " + role;
+
+    const bubble = document.createElement("div");
+    bubble.className = "bubble" + (extraClass ? " " + extraClass : "");
 
     row.appendChild(bubble);
     messages.appendChild(row);
-    scrollToBottom();
+    if (opts.animateTyping && role === "assistant") {
+      const textNode = document.createTextNode("");
+      bubble.appendChild(textNode);
+      const text = String(content || "");
+      const tick = text.length > 800 ? 3 : (text.length > 350 ? 2 : 1);
+      let i = 0;
+      scrollToMessageStart(row);
+      const run = () => {
+        i = Math.min(text.length, i + tick);
+        textNode.nodeValue = text.slice(0, i);
+        scrollToMessageStart(row);
+        if (i < text.length) {
+          setTimeout(run, 10);
+        } else {
+          renderBubbleRichContent(bubble, text);
+          scrollToMessageStart(row);
+        }
+      };
+      run();
+      return row;
+    }
+    renderBubbleRichContent(bubble, content);
+    if (opts.scrollToStart) scrollToMessageStart(row);
+    else scrollToBottom();
     return row;
   }
 
@@ -1277,8 +1308,8 @@ const CHAT_CLIENT_JS = String.raw`
             addMessage("assistant", errorText);
             return;
           }
-          const answer2 = retryData.answer || "No recibí respuesta.";
-          addMessage("assistant", answer2);
+      const answer2 = retryData.answer || "No recibí respuesta.";
+      addMessage("assistant", answer2, "", { animateTyping: true });
           if (locationResult.permissionState === "granted" && locationResult.coords) {
             setGpsConsentActive();
           } else {
@@ -1335,7 +1366,7 @@ const CHAT_CLIENT_JS = String.raw`
       }
 
       const answer = data.answer || "No recibí respuesta.";
-      addMessage("assistant", answer);
+      addMessage("assistant", answer, "", { animateTyping: true });
       if (data.location_source === "user_location") {
         addLocationBadge();
       }
@@ -2379,16 +2410,17 @@ export default {
 
     @media (max-width: 600px) {
       body {
-        padding-left: max(8px, env(safe-area-inset-left));
-        padding-right: max(8px, env(safe-area-inset-right));
-        padding-bottom: max(18px, calc(env(safe-area-inset-bottom) + 16px));
+        padding-top: max(6px, env(safe-area-inset-top));
+        padding-left: max(10px, env(safe-area-inset-left));
+        padding-right: max(10px, env(safe-area-inset-right));
+        padding-bottom: max(10px, env(safe-area-inset-bottom));
       }
       .app {
         max-width: none;
         border: 1px solid #e5e7eb;
-        border-radius: 14px;
+        border-radius: 26px;
         overflow: hidden;
-        height: calc(100svh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 18px);
+        height: calc(var(--vvh) - max(6px, env(safe-area-inset-top)) - max(10px, env(safe-area-inset-bottom)));
       }
 
       .bubble {

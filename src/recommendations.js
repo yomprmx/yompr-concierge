@@ -85,6 +85,7 @@ export async function searchPlacesRecommendations(analysis, tripJson, env) {
         "X-Goog-FieldMask": [
           "places.displayName",
           "places.formattedAddress",
+          "places.location",
           "places.rating",
           "places.userRatingCount",
           "places.priceLevel",
@@ -108,6 +109,8 @@ export async function searchPlacesRecommendations(analysis, tripJson, env) {
     const placesRaw = data.places.slice(0, 6).map(p => ({
       name: p.displayName?.text || null,
       address: p.formattedAddress || null,
+      lat: Number.isFinite(p?.location?.latitude) ? p.location.latitude : null,
+      lon: Number.isFinite(p?.location?.longitude) ? p.location.longitude : null,
       rating: p.rating ? Math.round(p.rating * 10) / 10 : null,
       review_count: p.userRatingCount || null,
       price_level: PRICE_LEVEL_MAP[p.priceLevel] || null,
@@ -309,10 +312,14 @@ async function validatePlacesOperationally(
   const desiredKeywords = inferDesiredKeywords(analysis);
   for (const place of places) {
     let placeGeo = null;
-    try {
-      const query = [place.name, place.address, analysis.city].filter(Boolean).join(", ");
-      placeGeo = await geocode(query, { city: analysis.city }, env);
-    } catch (_) {}
+    if (Number.isFinite(place.lat) && Number.isFinite(place.lon)) {
+      placeGeo = { lat: place.lat, lon: place.lon };
+    } else {
+      try {
+        const query = [place.name, place.address, analysis.city].filter(Boolean).join(", ");
+        placeGeo = await geocode(query, { city: analysis.city }, env);
+      } catch (_) {}
+    }
 
     const hotelWalkingMin = (placeGeo && hasHotelAnchor) ? await getRouteMinutes(hotelAnchorGeo, placeGeo, "walking", env) : null;
     const hotelDrivingMin = (placeGeo && hasHotelAnchor) ? await getRouteMinutes(hotelAnchorGeo, placeGeo, "driving", env) : null;
@@ -372,6 +379,11 @@ async function validatePlacesOperationally(
       if (da != null && db != null && da !== db) return da - db;
       return (b.operational?.score || 0) - (a.operational?.score || 0);
     });
+    const ultraNear = ranked.filter(p =>
+      (p?.operational?.distance_from_user_km != null && p.operational.distance_from_user_km <= 2.2) ||
+      (p?.operational?.travel_from_user_walking_min != null && p.operational.travel_from_user_walking_min <= 24)
+    );
+    if (ultraNear.length >= 2) ranked = ultraNear.concat(ranked.filter(p => !ultraNear.includes(p)));
   } else {
     ranked.sort((a, b) => (b.operational?.score || 0) - (a.operational?.score || 0));
   }
