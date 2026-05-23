@@ -746,6 +746,9 @@ Recomendaciones:
 - Si opening_hours está disponible y la pregunta es para esta noche o hoy, menciona si está abierto.
 - Si el lugar trae bloque operational, úsalo para validar recomendación real:
   - Considera open_now, travel_from_hotel_walking_min, travel_from_hotel_driving_min y next_day_risk.
+  - Si context.recommendations_operational.location_source = "user_location", prioriza travel_from_user_walking_min, travel_from_user_driving_min o distance_from_user_km.
+  - Si location_source = "user_location", NO uses frases como "cerca del hotel" ni "en la misma avenida del hotel" salvo que el usuario lo pida explícitamente.
+  - Si location_source = "user_location", redacta en torno a ubicación actual: "cerca de donde están ahora", "a pocos minutos de su ubicación".
   - Si next_day_risk.level = "unknown", NO menciones riesgo del día siguiente.
   - Si next_day_risk.level = "high", evita recomendar opciones lejanas o de logística pesada.
   - Prioriza opciones con menor tiempo desde hotel cuando el día siguiente sea exigente.
@@ -981,12 +984,18 @@ const CHAT_CLIENT_JS = String.raw`
 
   let conversationHistory = [];
   let isSending = false;
+  let baseViewportHeight = window.innerHeight;
   const GPS_CONSENT_KEY = "yompr_gps_consent_until";
   const GPS_CONSENT_TTL_MS = 24 * 60 * 60 * 1000;
 
   function syncViewportHeight() {
     const vv = window.visualViewport;
-    const h = vv ? vv.height : window.innerHeight;
+    const keyboardOpen = vv ? (window.innerHeight - vv.height) > 140 : false;
+    if (!keyboardOpen) {
+      baseViewportHeight = window.innerHeight;
+    }
+    const h = keyboardOpen ? baseViewportHeight : (vv ? vv.height : window.innerHeight);
+    document.body.classList.toggle("keyboard-open", keyboardOpen);
     document.documentElement.style.setProperty("--vvh", h + "px");
   }
 
@@ -1363,10 +1372,9 @@ const CHAT_CLIENT_JS = String.raw`
   window.addEventListener("resize", syncViewportHeight);
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", syncViewportHeight);
-    window.visualViewport.addEventListener("scroll", syncViewportHeight);
   }
-  questionInput.addEventListener("focus", () => setTimeout(syncViewportHeight, 80));
-  questionInput.addEventListener("blur", () => setTimeout(syncViewportHeight, 80));
+  questionInput.addEventListener("focus", () => setTimeout(syncViewportHeight, 30));
+  questionInput.addEventListener("blur", () => setTimeout(syncViewportHeight, 30));
 
   scrollToBottom();
 })();
@@ -2286,12 +2294,16 @@ export default {
       bottom: 0;
       z-index: 10;
       padding: 12px;
-      padding-bottom: calc(22px + env(safe-area-inset-bottom));
+      padding-bottom: calc(14px + env(safe-area-inset-bottom));
       border-top: 1px solid #e5e7eb;
       background: #ffffff;
       display: flex;
       gap: 8px;
       flex-shrink: 0;
+    }
+
+    body.keyboard-open .composer {
+      padding-bottom: max(8px, env(safe-area-inset-bottom));
     }
 
     .composer input {

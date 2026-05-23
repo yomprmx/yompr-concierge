@@ -130,7 +130,9 @@ export async function searchPlacesRecommendations(analysis, tripJson, env) {
       env,
       hotelAnchor,
       hotelAnchorGeo,
-      nextDayRisk
+      nextDayRisk,
+      locationSource,
+      userLocation
     );
 
     const payload = {
@@ -247,16 +249,46 @@ async function getRouteMinutes(from, to, mode, env) {
   }
 }
 
-async function validatePlacesOperationally(places, analysis, env, hotelAnchor, hotelAnchorGeo, nextDayRisk) {
+function haversineKm(from, to) {
+  if (!from?.lat || !from?.lon || !to?.lat || !to?.lon) return null;
+  const toRad = v => (v * Math.PI) / 180;
+  const R = 6371;
+  const dLat = toRad(to.lat - from.lat);
+  const dLon = toRad(to.lon - from.lon);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(from.lat)) * Math.cos(toRad(to.lat)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+async function validatePlacesOperationally(
+  places,
+  analysis,
+  env,
+  hotelAnchor,
+  hotelAnchorGeo,
+  nextDayRisk,
+  locationSource,
+  userLocation
+) {
   if (!Array.isArray(places) || !places.length) return [];
-  if (!hotelAnchorGeo?.lat || !hotelAnchorGeo?.lon) {
+  const hasHotelAnchor = hotelAnchorGeo?.lat && hotelAnchorGeo?.lon;
+  const hasUserLocation = userLocation?.lat && userLocation?.lon;
+
+  if (!hasHotelAnchor && !hasUserLocation) {
     return places.map(p => ({
       ...p,
       operational: {
         validated: false,
+        location_source: locationSource || "unknown",
         open_now: p.open_now,
         travel_from_hotel_walking_min: null,
         travel_from_hotel_driving_min: null,
+        travel_from_user_walking_min: null,
+        travel_from_user_driving_min: null,
+        distance_from_user_km: null,
         next_day_risk: nextDayRisk
       }
     }));
@@ -270,24 +302,36 @@ async function validatePlacesOperationally(places, analysis, env, hotelAnchor, h
       placeGeo = await geocode(query, { city: analysis.city }, env);
     } catch (_) {}
 
-    const walkingMin = placeGeo ? await getRouteMinutes(hotelAnchorGeo, placeGeo, "walking", env) : null;
-    const drivingMin = placeGeo ? await getRouteMinutes(hotelAnchorGeo, placeGeo, "driving", env) : null;
+    const hotelWalkingMin = (placeGeo && hasHotelAnchor) ? await getRouteMinutes(hotelAnchorGeo, placeGeo, "walking", env) : null;
+    const hotelDrivingMin = (placeGeo && hasHotelAnchor) ? await getRouteMinutes(hotelAnchorGeo, placeGeo, "driving", env) : null;
+    const userWalkingMin = (placeGeo && hasUserLocation) ? await getRouteMinutes(userLocation, placeGeo, "walking", env) : null;
+    const userDrivingMin = (placeGeo && hasUserLocation) ? await getRouteMinutes(userLocation, placeGeo, "driving", env) : null;
+    const userDistanceKm = (placeGeo && hasUserLocation) ? haversineKm(userLocation, placeGeo) : null;
+
+    const distancePenalty =
+      locationSource === "user_location"
+        ? (userWalkingMin != null ? Math.min(userWalkingMin / 2.5, 18) : (userDistanceKm != null ? Math.min(userDistanceKm * 2.2, 18) : 8))
+        : (hotelWalkingMin != null ? Math.min(hotelWalkingMin / 3, 12) : 6);
 
     const score =
       (place.rating || 0) * 10 +
       Math.min((place.review_count || 0) / 100, 20) +
       (place.open_now === true ? 10 : 0) -
-      (walkingMin != null ? Math.min(walkingMin / 3, 12) : 6) -
-      (nextDayRisk.level === "high" && walkingMin != null && walkingMin > 25 ? 8 : 0);
+      distancePenalty -
+      (nextDayRisk.level === "high" && hotelWalkingMin != null && hotelWalkingMin > 25 ? 8 : 0);
 
     enriched.push({
       ...place,
       operational: {
         validated: true,
+        location_source: locationSource || "hotel",
         hotel_anchor_name: hotelAnchor?.name || null,
         open_now: place.open_now,
-        travel_from_hotel_walking_min: walkingMin,
-        travel_from_hotel_driving_min: drivingMin,
+        travel_from_hotel_walking_min: hotelWalkingMin,
+        travel_from_hotel_driving_min: hotelDrivingMin,
+        travel_from_user_walking_min: userWalkingMin,
+        travel_from_user_driving_min: userDrivingMin,
+        distance_from_user_km: userDistanceKm != null ? Math.round(userDistanceKm * 100) / 100 : null,
         next_day_risk: nextDayRisk,
         score: Math.round(score * 10) / 10
       }
