@@ -42,7 +42,7 @@ export async function searchPlacesRecommendations(analysis, tripJson, env) {
     locationBias = {
       circle: {
         center: { latitude: userLocation.lat, longitude: userLocation.lon },
-        radius: 2200
+        radius: 1500
       }
     };
     locationSource = "user_location";
@@ -263,6 +263,17 @@ function haversineKm(from, to) {
   return R * c;
 }
 
+function inferDesiredKeywords(analysis) {
+  const raw = `${analysis?.recommendation_type || ""} ${analysis?.recommendation_query || ""}`.toLowerCase();
+  const out = new Set();
+  if (raw.includes("pizza") || raw.includes("pizzeria") || raw.includes("pizzería")) out.add("pizza");
+  if (raw.includes("salad") || raw.includes("ensalada")) out.add("salad");
+  if (raw.includes("sushi")) out.add("sushi");
+  if (raw.includes("burger") || raw.includes("hamburg")) out.add("burger");
+  if (raw.includes("taco")) out.add("taco");
+  return Array.from(out);
+}
+
 async function validatePlacesOperationally(
   places,
   analysis,
@@ -295,6 +306,7 @@ async function validatePlacesOperationally(
   }
 
   const enriched = [];
+  const desiredKeywords = inferDesiredKeywords(analysis);
   for (const place of places) {
     let placeGeo = null;
     try {
@@ -313,12 +325,24 @@ async function validatePlacesOperationally(
         ? (userWalkingMin != null ? Math.min(userWalkingMin / 2.5, 18) : (userDistanceKm != null ? Math.min(userDistanceKm * 2.2, 18) : 8))
         : (hotelWalkingMin != null ? Math.min(hotelWalkingMin / 3, 12) : 6);
 
+    const userDistanceScore = locationSource === "user_location"
+      ? (
+          userWalkingMin != null
+            ? Math.max(0, 44 - userWalkingMin * 2)
+            : (userDistanceKm != null ? Math.max(0, 40 - userDistanceKm * 10) : 0)
+        )
+      : 0;
+    const qualityScore =
+      (place.rating || 0) * 6 +
+      Math.min((place.review_count || 0) / 200, 8) +
+      (place.open_now === true ? 8 : 0);
+
     const score =
-      (place.rating || 0) * 10 +
-      Math.min((place.review_count || 0) / 100, 20) +
-      (place.open_now === true ? 10 : 0) -
-      distancePenalty -
+      (locationSource === "user_location" ? (userDistanceScore + qualityScore) : (qualityScore - distancePenalty)) -
       (nextDayRisk.level === "high" && hotelWalkingMin != null && hotelWalkingMin > 25 ? 8 : 0);
+
+    const textForMatch = `${place.name || ""} ${place.type || ""} ${place.description || ""}`.toLowerCase();
+    const keywordMatch = desiredKeywords.length ? desiredKeywords.some(k => textForMatch.includes(k)) : true;
 
     enriched.push({
       ...place,
@@ -332,12 +356,24 @@ async function validatePlacesOperationally(
         travel_from_user_walking_min: userWalkingMin,
         travel_from_user_driving_min: userDrivingMin,
         distance_from_user_km: userDistanceKm != null ? Math.round(userDistanceKm * 100) / 100 : null,
+        keyword_match: keywordMatch,
         next_day_risk: nextDayRisk,
         score: Math.round(score * 10) / 10
       }
     });
   }
-
-  enriched.sort((a, b) => (b.operational?.score || 0) - (a.operational?.score || 0));
-  return enriched;
+  let ranked = enriched;
+  if (locationSource === "user_location") {
+    const matched = enriched.filter(p => p?.operational?.keyword_match);
+    if (matched.length >= 2) ranked = matched;
+    ranked.sort((a, b) => {
+      const da = a?.operational?.distance_from_user_km;
+      const db = b?.operational?.distance_from_user_km;
+      if (da != null && db != null && da !== db) return da - db;
+      return (b.operational?.score || 0) - (a.operational?.score || 0);
+    });
+  } else {
+    ranked.sort((a, b) => (b.operational?.score || 0) - (a.operational?.score || 0));
+  }
+  return ranked;
 }

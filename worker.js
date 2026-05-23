@@ -984,17 +984,13 @@ const CHAT_CLIENT_JS = String.raw`
 
   let conversationHistory = [];
   let isSending = false;
-  let baseViewportHeight = window.innerHeight;
   const GPS_CONSENT_KEY = "yompr_gps_consent_until";
   const GPS_CONSENT_TTL_MS = 24 * 60 * 60 * 1000;
 
   function syncViewportHeight() {
     const vv = window.visualViewport;
-    const keyboardOpen = vv ? (window.innerHeight - vv.height) > 140 : false;
-    if (!keyboardOpen) {
-      baseViewportHeight = window.innerHeight;
-    }
-    const h = keyboardOpen ? baseViewportHeight : (vv ? vv.height : window.innerHeight);
+    const keyboardOpen = vv ? (window.innerHeight - vv.height) > 120 : false;
+    const h = vv ? Math.round(vv.height + (vv.offsetTop || 0)) : window.innerHeight;
     document.body.classList.toggle("keyboard-open", keyboardOpen);
     document.documentElement.style.setProperty("--vvh", h + "px");
   }
@@ -1372,6 +1368,7 @@ const CHAT_CLIENT_JS = String.raw`
   window.addEventListener("resize", syncViewportHeight);
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", syncViewportHeight);
+    window.visualViewport.addEventListener("scroll", syncViewportHeight);
   }
   questionInput.addEventListener("focus", () => setTimeout(syncViewportHeight, 30));
   questionInput.addEventListener("blur", () => setTimeout(syncViewportHeight, 30));
@@ -2290,8 +2287,7 @@ export default {
     }
 
     .composer {
-      position: sticky;
-      bottom: 0;
+      position: relative;
       z-index: 10;
       padding: 12px;
       padding-bottom: calc(14px + env(safe-area-inset-bottom));
