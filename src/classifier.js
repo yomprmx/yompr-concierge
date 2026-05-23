@@ -19,6 +19,7 @@ export function postProcessAnalysis(analysis) {
     recommendation_type: analysis.recommendation_type || null,
     recommendation_query: analysis.recommendation_query || null,
     price_preference: analysis.price_preference || null,
+    location_context: analysis.location_context || "trip_context",
     confidence: typeof analysis.confidence === "number" ? analysis.confidence : 0,
     needs_clarification: Boolean(analysis.needs_clarification),
     clarification_question: analysis.clarification_question || null
@@ -77,6 +78,7 @@ Formato exacto de respuesta:
   "recommendation_type": "restaurante | bar | cafe | museo | parque | tienda | hotel | entretenimiento | otro | null — solo si intent=recommendation",
   "recommendation_query": "query en inglés listo para Google Places Text Search, ej: 'cheap french restaurant Montmartre Paris' — solo si intent=recommendation, si no null",
   "price_preference": "economico | moderado | caro | null — solo si intent=recommendation",
+  "location_context": "current_user_area | trip_context — current_user_area solo si el usuario pide explícita o implícitamente recomendaciones cerca de su ubicación actual",
   "confidence": 0-1,
   "needs_clarification": true/false,
   "clarification_question": "pregunta corta si falta un dato indispensable"
@@ -99,6 +101,8 @@ Principios:
   - recommendation_query debe estar en inglés, ser específico, incluir tipo de lugar + precio si aplica + barrio/ciudad. Ejemplos: "cheap french bistro Montmartre Paris", "rooftop bar Venice", "family museum Rome near Colosseum".
   - Si el usuario no menciona precio, usa price_preference=null y omite precio en el query.
   - Si el usuario pide algo cerca del hotel, incluye el barrio o zona del hotel en el query.
+  - Si el usuario pide recomendaciones "cerca de mí", "aquí", "alrededor", "donde estoy" o equivalente, usa location_context="current_user_area".
+  - Si pide recomendaciones por ciudad, hotel o itinerario, usa location_context="trip_context".
 - Responde SOLO JSON válido.
 
 - Si el usuario dice "cuando vaya a X", "para ir a X", "cuando me vaya a X", "cuando salga hacia X" o algo equivalente, interpreta que pregunta por la salida desde la etapa anterior del itinerario hacia X.
@@ -155,6 +159,7 @@ Principios:
     recommendation_type: null,
     recommendation_query: null,
     price_preference: null,
+    location_context: "trip_context",
     confidence: 0,
     needs_clarification: false,
     clarification_question: null

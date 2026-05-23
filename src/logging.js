@@ -48,6 +48,7 @@ export async function saveChatLog(env, log) {
       recommendations_operational_validated: log.recommendations_operational_validated ?? null,
       recommendations_next_day_risk: log.recommendations_next_day_risk || null,
       recommendations_location_source: log.recommendations_location_source || null,
+      location_context: log.location_context || null,
       gps_requested: log.gps_requested || false,
       gps_permission_state: log.gps_permission_state || null,
       gps_coords_sent: log.gps_coords_sent || false,

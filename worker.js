@@ -436,6 +436,23 @@ function roundCoord(value) {
   return Math.round(value * 10000) / 10000;
 }
 
+function shouldRequestGpsForRecommendation(analysis, question) {
+  const intent = analysis?.intent || "";
+  if (intent !== "recommendation") return false;
+  if ((analysis?.location_context || "") === "current_user_area") return true;
+  const q = normalizeText(question || "");
+  return (
+    q.includes("cerca de mi") ||
+    q.includes("cerca de mí") ||
+    q.includes("near me") ||
+    q.includes("aqui") ||
+    q.includes("aquí") ||
+    q.includes("alrededor") ||
+    q.includes("donde estoy") ||
+    q.includes("around me")
+  );
+}
+
 async function processChatRequest(body, env) {
   const t0 = Date.now();
   let tripId = body.tripId || "unknown";
@@ -447,7 +464,8 @@ async function processChatRequest(body, env) {
       localDate,
       conversationHistory = [],
       locationRequestTriggered = false,
-      locationPermissionState = null
+      locationPermissionState = null,
+      locationRetry = false
     } = body;
     const userLocation = sanitizeUserLocation(body.userLocation);
 
@@ -467,6 +485,18 @@ async function processChatRequest(body, env) {
       conversationHistory
     );
     const classifierMs = Date.now() - classifierStart;
+    const gpsRecommendedByAi = shouldRequestGpsForRecommendation(analysis, question);
+
+    if (gpsRecommendedByAi && !userLocation && !locationRequestTriggered && !locationRetry) {
+      return {
+        status: 200,
+        payload: {
+          requires_location: true,
+          location_reason: "nearby_recommendation",
+          answer: "Para darte recomendaciones realmente cerca de ti, necesito usar tu ubicación actual."
+        }
+      };
+    }
 
     if (analysis.needs_clarification) {
       const clarificationAnswer =
@@ -823,6 +853,7 @@ No ofrezcas capacidades que no tienes, ni insinúes que podrías hacerlo más ad
       recommendations_operational_validated: recommendationsInfo?.places?.filter(p => p?.operational?.validated).length ?? null,
       recommendations_next_day_risk: recommendationsInfo?.operational_validation?.next_day_risk?.level || null,
       recommendations_location_source: recommendationsInfo?.operational_validation?.location_source || null,
+      location_context: analysis.location_context || null,
       gps_requested: Boolean(locationRequestTriggered),
       gps_permission_state: locationPermissionState || null,
       gps_coords_sent: Boolean(userLocation),
@@ -867,7 +898,14 @@ No ofrezcas capacidades que no tienes, ni insinúes que podrías hacerlo más ad
         answer.includes("transporte público")
     });
 
-    return { status: 200, payload: { answer, intent } };
+    return {
+      status: 200,
+      payload: {
+        answer,
+        intent,
+        location_source: recommendationsInfo?.operational_validation?.location_source || null
+      }
+    };
   } catch (e) {
     const errorAnswer = "Error al procesar la pregunta: " + String(e);
 
@@ -910,38 +948,6 @@ const CHAT_CLIENT_JS = String.raw`
     document.documentElement.style.setProperty("--vvh", h + "px");
   }
 
-  function userWantsNearbyRecommendations(question) {
-    const q = String(question || "").toLowerCase();
-    const hasNearWord =
-      q.includes("cerca") ||
-      q.includes("nearby") ||
-      q.includes("near me") ||
-      q.includes("alrededor");
-    const hasMyLocationWord =
-      q.includes("mi") ||
-      q.includes("mí") ||
-      q.includes("aqui") ||
-      q.includes("aquí") ||
-      q.includes("actual") ||
-      q.includes("estoy") ||
-      q.includes("ubicacion") ||
-      q.includes("ubicación");
-    if (hasNearWord && hasMyLocationWord) return true;
-    return (
-      q.includes("cerca de mi") ||
-      q.includes("cerca de mí") ||
-      q.includes("near me") ||
-      q.includes("a mi alrededor") ||
-      q.includes("por aqui") ||
-      q.includes("por aquí") ||
-      q.includes("alrededor mio") ||
-      q.includes("alrededor mío") ||
-      q.includes("donde estoy") ||
-      q.includes("where i am") ||
-      q.includes("around me")
-    );
-  }
-
   function getCurrentLocation() {
     return new Promise(function(resolve) {
       if (!navigator.geolocation) {
@@ -975,6 +981,18 @@ const CHAT_CLIENT_JS = String.raw`
         }
       );
     });
+  }
+
+  function addLocationBadge() {
+    const row = document.createElement("div");
+    row.className = "message-row assistant";
+    const badge = document.createElement("div");
+    badge.className = "bubble";
+    badge.style.cssText = "display:inline-flex;align-items:center;gap:6px;padding:6px 10px;font-size:12px;background:#ecfeff;border:1px solid #67e8f9;color:#0f766e;";
+    badge.textContent = "Ubicacion actual utilizada para estas recomendaciones";
+    row.appendChild(badge);
+    messages.appendChild(row);
+    scrollToBottom();
   }
 
   function scrollToBottom() {
@@ -1089,14 +1107,9 @@ const CHAT_CLIENT_JS = String.raw`
 
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const localDate = new Date().toLocaleDateString("en-CA", { timeZone: timeZone });
-    const locationRequestTriggered = userWantsNearbyRecommendations(question);
-    var locationResult = { coords: null, permissionState: "not_requested" };
-    if (locationRequestTriggered) {
-      locationResult = await getCurrentLocation();
-    }
 
-    try {
-      const res = await fetch("/api/chat", {
+    async function sendChat(userLocation, locationRequestTriggered, locationPermissionState, locationRetry) {
+      return fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1105,13 +1118,24 @@ const CHAT_CLIENT_JS = String.raw`
           timeZone: timeZone,
           localDate: localDate,
           conversationHistory: conversationHistory,
-          userLocation: locationResult.coords,
+          userLocation: userLocation,
           locationRequestTriggered: locationRequestTriggered,
-          locationPermissionState: locationResult.permissionState
+          locationPermissionState: locationPermissionState,
+          locationRetry: locationRetry
         })
       });
+    }
 
-      const data = await res.json();
+    try {
+      let res = await sendChat(null, false, "not_requested", false);
+      let data = await res.json();
+
+      if (res.ok && data && data.requires_location) {
+        const locationResult = await getCurrentLocation();
+        res = await sendChat(locationResult.coords, true, locationResult.permissionState, true);
+        data = await res.json();
+      }
+
       thinkingRow.remove();
 
       if (!res.ok) {
@@ -1122,6 +1146,9 @@ const CHAT_CLIENT_JS = String.raw`
 
       const answer = data.answer || "No recibí respuesta.";
       addMessage("assistant", answer);
+      if (data.location_source === "user_location") {
+        addLocationBadge();
+      }
       conversationHistory.push({ role: "user", content: question });
       conversationHistory.push({ role: "assistant", content: answer });
       conversationHistory = conversationHistory.slice(-8);
