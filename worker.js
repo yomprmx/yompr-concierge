@@ -431,6 +431,11 @@ function sanitizeUserLocation(raw) {
   return { lat, lon };
 }
 
+function roundCoord(value) {
+  if (!Number.isFinite(value)) return null;
+  return Math.round(value * 10000) / 10000;
+}
+
 async function processChatRequest(body, env) {
   const t0 = Date.now();
   let tripId = body.tripId || "unknown";
@@ -440,7 +445,9 @@ async function processChatRequest(body, env) {
     const {
       timeZone,
       localDate,
-      conversationHistory = []
+      conversationHistory = [],
+      locationRequestTriggered = false,
+      locationPermissionState = null
     } = body;
     const userLocation = sanitizeUserLocation(body.userLocation);
 
@@ -815,6 +822,12 @@ No ofrezcas capacidades que no tienes, ni insinúes que podrías hacerlo más ad
       recommendations_error: recommendationsInfo?.error || null,
       recommendations_operational_validated: recommendationsInfo?.places?.filter(p => p?.operational?.validated).length ?? null,
       recommendations_next_day_risk: recommendationsInfo?.operational_validation?.next_day_risk?.level || null,
+      recommendations_location_source: recommendationsInfo?.operational_validation?.location_source || null,
+      gps_requested: Boolean(locationRequestTriggered),
+      gps_permission_state: locationPermissionState || null,
+      gps_coords_sent: Boolean(userLocation),
+      gps_lat: roundCoord(userLocation?.lat),
+      gps_lon: roundCoord(userLocation?.lon),
       weather_used: Boolean(weatherInfo),
       weather_type: weatherInfo?.type || null,
       weather_source: weatherInfo?.source || null,
@@ -899,6 +912,21 @@ const CHAT_CLIENT_JS = String.raw`
 
   function userWantsNearbyRecommendations(question) {
     const q = String(question || "").toLowerCase();
+    const hasNearWord =
+      q.includes("cerca") ||
+      q.includes("nearby") ||
+      q.includes("near me") ||
+      q.includes("alrededor");
+    const hasMyLocationWord =
+      q.includes("mi") ||
+      q.includes("mí") ||
+      q.includes("aqui") ||
+      q.includes("aquí") ||
+      q.includes("actual") ||
+      q.includes("estoy") ||
+      q.includes("ubicacion") ||
+      q.includes("ubicación");
+    if (hasNearWord && hasMyLocationWord) return true;
     return (
       q.includes("cerca de mi") ||
       q.includes("cerca de mí") ||
@@ -907,31 +935,38 @@ const CHAT_CLIENT_JS = String.raw`
       q.includes("por aqui") ||
       q.includes("por aquí") ||
       q.includes("alrededor mio") ||
-      q.includes("alrededor mío")
+      q.includes("alrededor mío") ||
+      q.includes("donde estoy") ||
+      q.includes("where i am") ||
+      q.includes("around me")
     );
   }
 
   function getCurrentLocation() {
     return new Promise(function(resolve) {
       if (!navigator.geolocation) {
-        resolve(null);
+        resolve({ coords: null, permissionState: "unavailable" });
         return;
       }
       navigator.geolocation.getCurrentPosition(
         function(position) {
           var coords = position && position.coords ? position.coords : null;
           if (!coords) {
-            resolve(null);
+            resolve({ coords: null, permissionState: "error_no_coords" });
             return;
           }
           resolve({
-            lat: coords.latitude,
-            lon: coords.longitude,
-            accuracy: coords.accuracy || null
+            coords: {
+              lat: coords.latitude,
+              lon: coords.longitude,
+              accuracy: coords.accuracy || null
+            },
+            permissionState: "granted"
           });
         },
-        function() {
-          resolve(null);
+        function(err) {
+          var denied = err && err.code === 1;
+          resolve({ coords: null, permissionState: denied ? "denied" : "error" });
         },
         {
           enableHighAccuracy: false,
@@ -1054,9 +1089,11 @@ const CHAT_CLIENT_JS = String.raw`
 
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const localDate = new Date().toLocaleDateString("en-CA", { timeZone: timeZone });
-    const userLocation = userWantsNearbyRecommendations(question)
-      ? await getCurrentLocation()
-      : null;
+    const locationRequestTriggered = userWantsNearbyRecommendations(question);
+    var locationResult = { coords: null, permissionState: "not_requested" };
+    if (locationRequestTriggered) {
+      locationResult = await getCurrentLocation();
+    }
 
     try {
       const res = await fetch("/api/chat", {
@@ -1068,7 +1105,9 @@ const CHAT_CLIENT_JS = String.raw`
           timeZone: timeZone,
           localDate: localDate,
           conversationHistory: conversationHistory,
-          userLocation: userLocation
+          userLocation: locationResult.coords,
+          locationRequestTriggered: locationRequestTriggered,
+          locationPermissionState: locationResult.permissionState
         })
       });
 
@@ -1388,7 +1427,8 @@ export default {
     <td style="max-width: 260px; white-space: pre-wrap; font-size:11px; color:#555;">${escapeHtml(log.geocode_destination_attempted_query || "")}</td>
     <td style="color:#c00; max-width:160px; white-space:pre-wrap;">${escapeHtml(log.geocode_origin_error || "")}</td>
     <td style="color:#c00; max-width:160px; white-space:pre-wrap;">${escapeHtml(log.geocode_destination_error || "")}</td>
-    <td style="max-width:220px; white-space:pre-wrap; font-size:11px;">${log.recommendations_used ? `✅ ${log.recommendations_count} resultados<br><small style="color:#555;">${escapeHtml(log.recommendations_query || "")}</small>${log.recommendations_bias_used ? "<br><small style='color:#22a;'>📍 bias hotel</small>" : ""}<br><small style="color:#0a6;">ops validadas: ${escapeHtml(String(log.recommendations_operational_validated ?? "—"))}</small><br><small style="color:#555;">riesgo mañana: ${escapeHtml(log.recommendations_next_day_risk || "—")}</small>` : (log.intent === "recommendation" ? `<span style="color:#c00;">Sin resultados<br><small>${escapeHtml(log.recommendations_error || "")}</small></span>` : "—")}</td>
+    <td style="max-width:220px; white-space:pre-wrap; font-size:11px;">${log.recommendations_used ? `✅ ${log.recommendations_count} resultados<br><small style="color:#555;">${escapeHtml(log.recommendations_query || "")}</small>${log.recommendations_bias_used ? `<br><small style='color:#22a;'>📍 source: ${escapeHtml(log.recommendations_location_source || "hotel")}</small>` : ""}<br><small style="color:#0a6;">ops validadas: ${escapeHtml(String(log.recommendations_operational_validated ?? "—"))}</small><br><small style="color:#555;">riesgo mañana: ${escapeHtml(log.recommendations_next_day_risk || "—")}</small>` : (log.intent === "recommendation" ? `<span style="color:#c00;">Sin resultados<br><small>${escapeHtml(log.recommendations_error || "")}</small></span>` : "—")}</td>
+    <td style="max-width:180px; white-space:pre-wrap; font-size:11px;">${log.gps_requested ? `solicitado<br><small style="color:#555;">permiso: ${escapeHtml(log.gps_permission_state || "—")}</small><br><small style="color:#0a6;">coords: ${log.gps_coords_sent ? "sí" : "no"}</small><br><small style="color:#666;">${log.gps_lat ?? "—"}, ${log.gps_lon ?? "—"}</small>` : "—"}</td>
     <td style="max-width:180px; white-space:pre-wrap; font-size:11px;">${weatherStatus}</td>
     <td style="max-width:180px; white-space:pre-wrap; font-size:11px;">${weatherNow}</td>
     <td style="max-width:220px; white-space:pre-wrap; font-size:11px;">${weatherTomorrow}<br><small style="color:#555;">días consultados: ${escapeHtml(String(log.weather_forecast_days ?? "—"))}</small></td>
@@ -1465,6 +1505,7 @@ export default {
         <th>Error geocode origen</th>
         <th>Error geocode destino</th>
         <th>🏪 Recomendaciones</th>
+        <th>📍 GPS</th>
         <th>🌤️ Weather</th>
         <th>🌡️ Clima actual</th>
         <th>📅 Mañana</th>
@@ -1515,6 +1556,10 @@ export default {
         lines.push(`Route time basis: ${log.route_time_basis || ""}`);
         lines.push(`Route departure time: ${log.route_departure_time || ""}`);
         lines.push(`Recommendations status: ${log.tool_recommendations_status || ""}`);
+        lines.push(`Recommendations location source: ${log.recommendations_location_source || ""}`);
+        lines.push(`GPS requested: ${log.gps_requested ? "yes" : "no"}`);
+        lines.push(`GPS permission: ${log.gps_permission_state || ""}`);
+        lines.push(`GPS coords sent: ${log.gps_coords_sent ? "yes" : "no"} (${log.gps_lat ?? ""}, ${log.gps_lon ?? ""})`);
         lines.push(`Weather status: ${log.tool_weather_status || ""}`);
         lines.push(`Clima ubicación: ${log.weather_location || ""}`);
         lines.push(`Clima actual: ${log.weather_current_temp_c ?? ""}C ${log.weather_current_condition || ""}`);
@@ -1548,6 +1593,8 @@ export default {
         "created_at", "trip_id", "intent", "scope", "city",
         "question", "answer",
         "tool_route_status", "tool_recommendations_status", "tool_weather_status",
+        "gps_requested", "gps_permission_state", "gps_coords_sent", "gps_lat", "gps_lon",
+        "recommendations_location_source",
         "route_time_basis", "route_departure_time",
         "weather_location", "weather_current_temp_c", "weather_current_condition",
         "weather_forecast_tomorrow_min_c", "weather_forecast_tomorrow_max_c", "weather_forecast_tomorrow_rain_prob",
@@ -1561,6 +1608,8 @@ export default {
           log.created_at, log.trip_id, log.intent, log.scope, log.city,
           log.question, log.answer,
           log.tool_route_status, log.tool_recommendations_status, log.tool_weather_status,
+          log.gps_requested, log.gps_permission_state, log.gps_coords_sent, log.gps_lat, log.gps_lon,
+          log.recommendations_location_source,
           log.route_time_basis, log.route_departure_time,
           log.weather_location, log.weather_current_temp_c, log.weather_current_condition,
           log.weather_forecast_tomorrow_min_c, log.weather_forecast_tomorrow_max_c, log.weather_forecast_tomorrow_rain_prob,
