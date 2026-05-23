@@ -1186,31 +1186,10 @@ const CHAT_CLIENT_JS = String.raw`
     row.className = "message-row " + role;
 
     const bubble = document.createElement("div");
-    bubble.className = "bubble" + (extraClass ? " " + extraClass : "");
+    bubble.className = "bubble" + (extraClass ? " " + extraClass : "") + (opts.fadeIn ? " reveal-fade" : "");
 
     row.appendChild(bubble);
     messages.appendChild(row);
-    if (opts.animateTyping && role === "assistant") {
-      const textNode = document.createTextNode("");
-      bubble.appendChild(textNode);
-      const text = String(content || "");
-      const tick = text.length > 800 ? 3 : (text.length > 350 ? 2 : 1);
-      let i = 0;
-      scrollToMessageStart(row);
-      const run = () => {
-        i = Math.min(text.length, i + tick);
-        textNode.nodeValue = text.slice(0, i);
-        scrollToMessageStart(row);
-        if (i < text.length) {
-          setTimeout(run, 10);
-        } else {
-          renderBubbleRichContent(bubble, text);
-          scrollToMessageStart(row);
-        }
-      };
-      run();
-      return row;
-    }
     renderBubbleRichContent(bubble, content);
     if (opts.scrollToStart) scrollToMessageStart(row);
     else scrollToBottom();
@@ -1308,8 +1287,8 @@ const CHAT_CLIENT_JS = String.raw`
             addMessage("assistant", errorText);
             return;
           }
-      const answer2 = retryData.answer || "No recibí respuesta.";
-      addMessage("assistant", answer2, "", { animateTyping: true });
+          const answer2 = retryData.answer || "No recibí respuesta.";
+          addMessage("assistant", answer2, "", { fadeIn: true, scrollToStart: true });
           if (locationResult.permissionState === "granted" && locationResult.coords) {
             setGpsConsentActive();
           } else {
@@ -1366,7 +1345,7 @@ const CHAT_CLIENT_JS = String.raw`
       }
 
       const answer = data.answer || "No recibí respuesta.";
-      addMessage("assistant", answer, "", { animateTyping: true });
+      addMessage("assistant", answer, "", { fadeIn: true, scrollToStart: true });
       if (data.location_source === "user_location") {
         addLocationBadge();
       }
@@ -2317,6 +2296,10 @@ export default {
       box-shadow: 0 5px 12px rgba(15, 23, 42, 0.06);
     }
 
+    .bubble.reveal-fade {
+      animation: bubbleFadeIn 260ms ease both;
+    }
+
     .composer {
       position: relative;
       z-index: 10;
@@ -2335,6 +2318,7 @@ export default {
 
     .composer input {
       flex: 1;
+      min-width: 0;
       border: 1px solid #d1d5db;
       border-radius: 999px;
       padding: 12px 15px;
@@ -2350,6 +2334,8 @@ export default {
     }
 
     .composer button {
+      flex: 0 0 auto;
+      min-width: 96px;
       border: none;
       background: #111827;
       color: #ffffff;
@@ -2408,19 +2394,24 @@ export default {
       to { opacity: 1; transform: translateY(0); }
     }
 
+    @keyframes bubbleFadeIn {
+      from { opacity: 0; transform: translateY(5px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
     @media (max-width: 600px) {
       body {
-        padding-top: max(6px, env(safe-area-inset-top));
-        padding-left: max(10px, env(safe-area-inset-left));
-        padding-right: max(10px, env(safe-area-inset-right));
-        padding-bottom: max(10px, env(safe-area-inset-bottom));
+        padding-top: max(8px, env(safe-area-inset-top));
+        padding-left: max(12px, env(safe-area-inset-left));
+        padding-right: max(12px, env(safe-area-inset-right));
+        padding-bottom: max(16px, env(safe-area-inset-bottom));
       }
       .app {
         max-width: none;
         border: 1px solid #e5e7eb;
-        border-radius: 26px;
+        border-radius: 30px;
         overflow: hidden;
-        height: calc(var(--vvh) - max(6px, env(safe-area-inset-top)) - max(10px, env(safe-area-inset-bottom)));
+        height: calc(var(--vvh) - max(8px, env(safe-area-inset-top)) - max(16px, env(safe-area-inset-bottom)));
       }
 
       .bubble {
@@ -2434,6 +2425,16 @@ export default {
 
       .messages {
         padding: 14px;
+      }
+
+      .composer {
+        padding: 10px;
+        padding-bottom: calc(20px + env(safe-area-inset-bottom));
+      }
+
+      .composer button {
+        min-width: 90px;
+        padding: 0 14px;
       }
     }
   </style>
