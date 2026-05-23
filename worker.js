@@ -438,7 +438,7 @@ function roundCoord(value) {
 
 function shouldRequestGpsForRecommendation(analysis, question) {
   const intent = analysis?.intent || "";
-  if (intent !== "recommendation") return false;
+  if (intent !== "recommendation" && intent !== "nearby_places") return false;
   if ((analysis?.location_context || "") === "current_user_area") return true;
   const q = normalizeText(question || "");
   return (
@@ -599,7 +599,9 @@ async function processChatRequest(body, env) {
     let recommendationsMs = null;
     let weatherMs = null;
 
-    if (intent === "recommendation" && analysis.recommendation_query) {
+    const isRecommendationIntent = intent === "recommendation" || intent === "nearby_places";
+
+    if (isRecommendationIntent && analysis.recommendation_query) {
       try {
         const recStart = Date.now();
         recommendationsInfo = await searchPlacesRecommendations(
@@ -618,7 +620,7 @@ async function processChatRequest(body, env) {
       }
     }
 
-    if (intent === "weather" || analysis.tool_needed === "weather" || intent === "recommendation") {
+    if (intent === "weather" || analysis.tool_needed === "weather" || isRecommendationIntent) {
       const weatherStart = Date.now();
       weatherInfo = await enrichWithWeatherInfo(
         tripJson,
@@ -632,7 +634,7 @@ async function processChatRequest(body, env) {
     const questionNorm = normalizeText(question);
 
     const needsThinking =
-      intent === "recommendation" ||
+      isRecommendationIntent ||
       analysis.scope === "trip_analysis" ||
       questionNorm.includes("conflicto") ||
       questionNorm.includes("pesado") ||
@@ -921,10 +923,10 @@ No ofrezcas capacidades que no tienes, ni insinúes que podrías hacerlo más ad
         : (analysis.intent === "route" || analysis.tool_needed === "route" ? "none" : null),
       tool_recommendations_status: recommendationsInfo
         ? (recommendationsUsed ? "ok" : (recommendationsInfo.error ? "error" : "empty"))
-        : (intent === "recommendation" ? "none" : null),
+        : (isRecommendationIntent ? "none" : null),
       tool_weather_status: weatherInfo
         ? (weatherInfo.type === "weather_error" ? "error" : "ok")
-        : ((intent === "weather" || intent === "recommendation") ? "none" : null),
+        : ((intent === "weather" || isRecommendationIntent) ? "none" : null),
       cache_route_hit: Boolean(transportInfo?.cache_hit),
       cache_recommendations_hit: Boolean(recommendationsInfo?.cache_hit),
       cache_weather_hit: Boolean(weatherInfo?.cache_hit),
@@ -1577,7 +1579,7 @@ export default {
     <td style="max-width: 260px; white-space: pre-wrap; font-size:11px; color:#555;">${escapeHtml(log.geocode_destination_attempted_query || "")}</td>
     <td style="color:#c00; max-width:160px; white-space:pre-wrap;">${escapeHtml(log.geocode_origin_error || "")}</td>
     <td style="color:#c00; max-width:160px; white-space:pre-wrap;">${escapeHtml(log.geocode_destination_error || "")}</td>
-    <td style="max-width:220px; white-space:pre-wrap; font-size:11px;">${log.recommendations_used ? `✅ ${log.recommendations_count} resultados<br><small style="color:#555;">${escapeHtml(log.recommendations_query || "")}</small>${log.recommendations_bias_used ? `<br><small style='color:#22a;'>📍 source: ${escapeHtml(log.recommendations_location_source || "hotel")}</small>` : ""}<br><small style="color:#0a6;">ops validadas: ${escapeHtml(String(log.recommendations_operational_validated ?? "—"))}</small><br><small style="color:#555;">riesgo mañana: ${escapeHtml(log.recommendations_next_day_risk || "—")}</small>` : (log.intent === "recommendation" ? `<span style="color:#c00;">Sin resultados<br><small>${escapeHtml(log.recommendations_error || "")}</small></span>` : "—")}</td>
+    <td style="max-width:220px; white-space:pre-wrap; font-size:11px;">${log.recommendations_used ? `✅ ${log.recommendations_count} resultados<br><small style="color:#555;">${escapeHtml(log.recommendations_query || "")}</small>${log.recommendations_bias_used ? `<br><small style='color:#22a;'>📍 source: ${escapeHtml(log.recommendations_location_source || "hotel")}</small>` : ""}<br><small style="color:#0a6;">ops validadas: ${escapeHtml(String(log.recommendations_operational_validated ?? "—"))}</small><br><small style="color:#555;">riesgo mañana: ${escapeHtml(log.recommendations_next_day_risk || "—")}</small>` : ((log.intent === "recommendation" || log.intent === "nearby_places") ? `<span style="color:#c00;">Sin resultados<br><small>${escapeHtml(log.recommendations_error || "")}</small></span>` : "—")}</td>
     <td style="max-width:180px; white-space:pre-wrap; font-size:11px;">${log.gps_requested ? `solicitado<br><small style="color:#555;">permiso: ${escapeHtml(log.gps_permission_state || "—")}</small><br><small style="color:#0a6;">coords: ${log.gps_coords_sent ? "sí" : "no"}</small><br><small style="color:#666;">${log.gps_lat ?? "—"}, ${log.gps_lon ?? "—"}</small>` : "—"}</td>
     <td style="max-width:180px; white-space:pre-wrap; font-size:11px;">${weatherStatus}</td>
     <td style="max-width:180px; white-space:pre-wrap; font-size:11px;">${weatherNow}</td>
