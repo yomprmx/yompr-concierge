@@ -488,12 +488,50 @@ async function processChatRequest(body, env) {
     const gpsRecommendedByAi = shouldRequestGpsForRecommendation(analysis, question);
 
     if (gpsRecommendedByAi && !userLocation && !locationRequestTriggered && !locationRetry) {
+      await saveChatLog(env, {
+        trip_id: tripId,
+        question,
+        intent: analysis.intent || "recommendation",
+        scope: analysis.scope || "all",
+        city: analysis.city || null,
+        answer: "Solicitud de ubicación enviada al cliente.",
+        location_context: analysis.location_context || null,
+        gps_requested: true,
+        gps_permission_state: "not_requested_yet",
+        gps_coords_sent: false,
+        tool_recommendations_status: "needs_location"
+      });
       return {
         status: 200,
         payload: {
           requires_location: true,
           location_reason: "nearby_recommendation",
           answer: "Para darte recomendaciones realmente cerca de ti, necesito usar tu ubicación actual."
+        }
+      };
+    }
+
+    if (gpsRecommendedByAi && !userLocation && locationRetry) {
+      const noGpsAnswer = "No pude acceder a tu ubicación actual. Revisa permisos de ubicación del navegador y vuelve a tocar Compartir ubicación para darte opciones cerca de ti.";
+      await saveChatLog(env, {
+        trip_id: tripId,
+        question,
+        intent: analysis.intent || "recommendation",
+        scope: analysis.scope || "all",
+        city: analysis.city || null,
+        answer: noGpsAnswer,
+        location_context: analysis.location_context || null,
+        gps_requested: true,
+        gps_permission_state: locationPermissionState || "unknown",
+        gps_coords_sent: false,
+        tool_recommendations_status: "location_unavailable"
+      });
+      return {
+        status: 200,
+        payload: {
+          answer: noGpsAnswer,
+          intent: analysis.intent || "recommendation",
+          location_source: null
         }
       };
     }
@@ -954,8 +992,17 @@ const CHAT_CLIENT_JS = String.raw`
         resolve({ coords: null, permissionState: "unavailable" });
         return;
       }
+      var resolved = false;
+      var timeoutId = setTimeout(function() {
+        if (resolved) return;
+        resolved = true;
+        resolve({ coords: null, permissionState: "timeout" });
+      }, 10000);
       navigator.geolocation.getCurrentPosition(
         function(position) {
+          if (resolved) return;
+          resolved = true;
+          clearTimeout(timeoutId);
           var coords = position && position.coords ? position.coords : null;
           if (!coords) {
             resolve({ coords: null, permissionState: "error_no_coords" });
@@ -971,6 +1018,9 @@ const CHAT_CLIENT_JS = String.raw`
           });
         },
         function(err) {
+          if (resolved) return;
+          resolved = true;
+          clearTimeout(timeoutId);
           var denied = err && err.code === 1;
           resolve({ coords: null, permissionState: denied ? "denied" : "error" });
         },
@@ -1017,8 +1067,10 @@ const CHAT_CLIENT_JS = String.raw`
       try {
         await onShareLocation();
       } finally {
-        btn.disabled = false;
-        btn.textContent = "Compartir ubicación";
+        if (document.body.contains(btn)) {
+          btn.disabled = false;
+          btn.textContent = "Compartir ubicación";
+        }
       }
     });
     bubble.appendChild(btn);
@@ -1180,6 +1232,9 @@ const CHAT_CLIENT_JS = String.raw`
           }
           const answer2 = retryData.answer || "No recibí respuesta.";
           addMessage("assistant", answer2);
+          if (locationResult.permissionState !== "granted") {
+            addMessage("assistant", "No se obtuvo permiso de ubicación (" + locationResult.permissionState + ").");
+          }
           if (retryData.location_source === "user_location") {
             addLocationBadge();
           }
@@ -1689,7 +1744,7 @@ export default {
         "question", "answer",
         "tool_route_status", "tool_recommendations_status", "tool_weather_status",
         "gps_requested", "gps_permission_state", "gps_coords_sent", "gps_lat", "gps_lon",
-        "recommendations_location_source",
+        "recommendations_location_source", "location_context",
         "route_time_basis", "route_departure_time",
         "weather_location", "weather_current_temp_c", "weather_current_condition",
         "weather_forecast_tomorrow_min_c", "weather_forecast_tomorrow_max_c", "weather_forecast_tomorrow_rain_prob",
@@ -1704,7 +1759,7 @@ export default {
           log.question, log.answer,
           log.tool_route_status, log.tool_recommendations_status, log.tool_weather_status,
           log.gps_requested, log.gps_permission_state, log.gps_coords_sent, log.gps_lat, log.gps_lon,
-          log.recommendations_location_source,
+          log.recommendations_location_source, log.location_context,
           log.route_time_basis, log.route_departure_time,
           log.weather_location, log.weather_current_temp_c, log.weather_current_condition,
           log.weather_forecast_tomorrow_min_c, log.weather_forecast_tomorrow_max_c, log.weather_forecast_tomorrow_rain_prob,
