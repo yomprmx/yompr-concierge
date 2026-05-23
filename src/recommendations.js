@@ -15,22 +15,40 @@ export async function searchPlacesRecommendations(analysis, tripJson, env) {
   const tripId = analysis.trip_id || "unknown";
   const query = analysis.recommendation_query;
   if (!query) return null;
+  const userLocation = analysis.user_location || null;
+  const userLocationBucket = getUserLocationBucket(userLocation);
   const cacheKey = buildCacheKey("places", [
     tripId,
     analysis.city || "",
     query,
     analysis.price_preference || "",
-    analysis.localDate || ""
+    analysis.localDate || "",
+    userLocationBucket
   ]);
   const cached = await cacheGetJson(env, cacheKey);
   if (cached) return { ...cached, cache_hit: true };
 
   let locationBias = null;
+  let locationSource = "hotel";
   let hotelAnchor = null;
   let hotelAnchorGeo = null;
   const city = analysis.city ? normalizeText(analysis.city) : null;
 
-  if (city) {
+  if (
+    userLocation &&
+    Number.isFinite(userLocation.lat) &&
+    Number.isFinite(userLocation.lon)
+  ) {
+    locationBias = {
+      circle: {
+        center: { latitude: userLocation.lat, longitude: userLocation.lon },
+        radius: 2200
+      }
+    };
+    locationSource = "user_location";
+  }
+
+  if (!locationBias && city) {
     const hotels = tripJson.hotelVouchers || [];
     const cityHotel = hotels.find(h =>
       normalizeText(h.accommodationAddress || "").includes(city) ||
@@ -49,6 +67,7 @@ export async function searchPlacesRecommendations(analysis, tripJson, env) {
           hotelAnchorGeo = await geocode(hotelQuery, { city: analysis.city }, env);
           if (hotelAnchorGeo?.lat && hotelAnchorGeo?.lon) {
             locationBias = { circle: { center: { latitude: hotelAnchorGeo.lat, longitude: hotelAnchorGeo.lon }, radius: 2000 } };
+            locationSource = "hotel";
           }
         } catch (_) {}
       }
@@ -121,7 +140,8 @@ export async function searchPlacesRecommendations(analysis, tripJson, env) {
       error: null,
       operational_validation: {
         hotel_anchor: hotelAnchor || null,
-        next_day_risk: nextDayRisk
+        next_day_risk: nextDayRisk,
+        location_source: locationSource
       }
     };
     await cachePutJson(env, cacheKey, payload, 2 * 3600);
@@ -129,6 +149,17 @@ export async function searchPlacesRecommendations(analysis, tripJson, env) {
   } catch (e) {
     return { places: [], query, bias_used: Boolean(locationBias), error: String(e) };
   }
+}
+
+function getUserLocationBucket(userLocation) {
+  if (
+    !userLocation ||
+    !Number.isFinite(userLocation.lat) ||
+    !Number.isFinite(userLocation.lon)
+  ) return "no_user_location";
+  const lat = Math.round(userLocation.lat * 100) / 100;
+  const lon = Math.round(userLocation.lon * 100) / 100;
+  return `user:${lat},${lon}`;
 }
 
 function parseDateMaybe(value) {

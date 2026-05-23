@@ -422,6 +422,15 @@ function renderClientPortal(errorText = "") {
 </html>`;
 }
 
+function sanitizeUserLocation(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const lat = Number(raw.lat);
+  const lon = Number(raw.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
+  return { lat, lon };
+}
+
 async function processChatRequest(body, env) {
   const t0 = Date.now();
   let tripId = body.tripId || "unknown";
@@ -433,6 +442,7 @@ async function processChatRequest(body, env) {
       localDate,
       conversationHistory = []
     } = body;
+    const userLocation = sanitizeUserLocation(body.userLocation);
 
     const tripText = await env.TRIPS.get(tripId);
 
@@ -518,7 +528,7 @@ async function processChatRequest(body, env) {
       try {
         const recStart = Date.now();
         recommendationsInfo = await searchPlacesRecommendations(
-          { ...analysis, trip_id: tripId, localDate, original_question: question },
+          { ...analysis, trip_id: tripId, localDate, original_question: question, user_location: userLocation },
           tripJson,
           env
         );
@@ -887,6 +897,51 @@ const CHAT_CLIENT_JS = String.raw`
     document.documentElement.style.setProperty("--vvh", h + "px");
   }
 
+  function userWantsNearbyRecommendations(question) {
+    const q = String(question || "").toLowerCase();
+    return (
+      q.includes("cerca de mi") ||
+      q.includes("cerca de mí") ||
+      q.includes("near me") ||
+      q.includes("a mi alrededor") ||
+      q.includes("por aqui") ||
+      q.includes("por aquí") ||
+      q.includes("alrededor mio") ||
+      q.includes("alrededor mío")
+    );
+  }
+
+  function getCurrentLocation() {
+    return new Promise(function(resolve) {
+      if (!navigator.geolocation) {
+        resolve(null);
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        function(position) {
+          var coords = position && position.coords ? position.coords : null;
+          if (!coords) {
+            resolve(null);
+            return;
+          }
+          resolve({
+            lat: coords.latitude,
+            lon: coords.longitude,
+            accuracy: coords.accuracy || null
+          });
+        },
+        function() {
+          resolve(null);
+        },
+        {
+          enableHighAccuracy: false,
+          timeout: 8000,
+          maximumAge: 120000
+        }
+      );
+    });
+  }
+
   function scrollToBottom() {
     messages.scrollTop = messages.scrollHeight;
   }
@@ -999,6 +1054,9 @@ const CHAT_CLIENT_JS = String.raw`
 
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const localDate = new Date().toLocaleDateString("en-CA", { timeZone: timeZone });
+    const userLocation = userWantsNearbyRecommendations(question)
+      ? await getCurrentLocation()
+      : null;
 
     try {
       const res = await fetch("/api/chat", {
@@ -1009,7 +1067,8 @@ const CHAT_CLIENT_JS = String.raw`
           question: question,
           timeZone: timeZone,
           localDate: localDate,
-          conversationHistory: conversationHistory
+          conversationHistory: conversationHistory,
+          userLocation: userLocation
         })
       });
 
