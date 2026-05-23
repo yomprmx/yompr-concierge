@@ -20,6 +20,8 @@ export function postProcessAnalysis(analysis) {
     recommendation_query: analysis.recommendation_query || null,
     price_preference: analysis.price_preference || null,
     location_context: analysis.location_context || "trip_context",
+    wiki_needed: Boolean(analysis.wiki_needed),
+    wiki_query: analysis.wiki_query || null,
     confidence: typeof analysis.confidence === "number" ? analysis.confidence : 0,
     needs_clarification: Boolean(analysis.needs_clarification),
     clarification_question: analysis.clarification_question || null
@@ -68,7 +70,7 @@ Formato exacto de respuesta:
   "scope": "all | city | date | next_event | specific_item | trip_analysis | unknown",
   "city": "ciudad relevante si aplica, si no null",
   "date_reference": "hoy | mañana | fecha específica | null",
-  "tool_needed": "none | route | places | weather",
+  "tool_needed": "none | route | places | weather | wiki",
   "route_direction": "airport_to_hotel | hotel_to_airport | hotel_to_place | place_to_hotel | point_to_point | unknown",
   "route_mode": "walking | driving | transit | all",
   "airport_code": "código IATA si aplica, si no null",
@@ -79,6 +81,8 @@ Formato exacto de respuesta:
   "recommendation_query": "query en inglés listo para Google Places Text Search, ej: 'cheap french restaurant Montmartre Paris' — solo si intent=recommendation, si no null",
   "price_preference": "economico | moderado | caro | null — solo si intent=recommendation",
   "location_context": "current_user_area | trip_context — current_user_area solo si el usuario pide explícita o implícitamente recomendaciones cerca de su ubicación actual",
+  "wiki_needed": "true/false — true si la pregunta es urbana, histórica, artística, cultural o de contexto de lugar",
+  "wiki_query": "consulta breve para Wikipedia (en español), por ejemplo: 'Coliseo de Roma historia', 'Sagrada Familia arquitectura', o null si wiki_needed=false",
   "confidence": 0-1,
   "needs_clarification": true/false,
   "clarification_question": "pregunta corta si falta un dato indispensable"
@@ -119,6 +123,7 @@ Principios:
   destination_query=null,
   needs_clarification=true,
   clarification_question preguntando desde qué aeropuerto, estación o punto saldrá hacia ese destino.
+- Si el usuario pide historia, arte, arquitectura, contexto urbano, barrios, monumentos, museos o cultura local, marca wiki_needed=true y llena wiki_query.
 `
         },
         ...cleanHistory,
@@ -160,6 +165,8 @@ Principios:
     recommendation_query: null,
     price_preference: null,
     location_context: "trip_context",
+    wiki_needed: false,
+    wiki_query: null,
     confidence: 0,
     needs_clarification: false,
     clarification_question: null

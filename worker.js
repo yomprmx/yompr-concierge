@@ -5,6 +5,7 @@ import { enrichWithTransportInfo } from "./src/routing.js";
 import { searchPlacesRecommendations } from "./src/recommendations.js";
 import { enrichWithWeatherInfo } from "./src/weather.js";
 import { saveChatLog } from "./src/logging.js";
+import { fetchWikipediaContext } from "./src/wiki.js";
 
 function normalizeWrappedUrls(text) {
   if (!text) return text;
@@ -453,6 +454,24 @@ function shouldRequestGpsForRecommendation(analysis, question) {
   );
 }
 
+function shouldUseWikipedia(analysis, question) {
+  if (analysis?.wiki_needed) return true;
+  if (analysis?.tool_needed === "wiki") return true;
+  const q = normalizeText(question || "");
+  return (
+    q.includes("historia") ||
+    q.includes("historico") ||
+    q.includes("histórico") ||
+    q.includes("arquitectura") ||
+    q.includes("arte") ||
+    q.includes("museo") ||
+    q.includes("monumento") ||
+    q.includes("barrio") ||
+    q.includes("urbano") ||
+    q.includes("cultura")
+  );
+}
+
 async function processChatRequest(body, env) {
   const t0 = Date.now();
   let tripId = body.tripId || "unknown";
@@ -596,8 +615,11 @@ async function processChatRequest(body, env) {
     let recommendationsInfo = null;
     let recommendationsUsed = false;
     let weatherInfo = null;
+    let wikiInfo = null;
     let recommendationsMs = null;
     let weatherMs = null;
+    let wikiMs = null;
+    const wikiRequested = shouldUseWikipedia(analysis, question);
 
     const isRecommendationIntent = intent === "recommendation" || intent === "nearby_places";
 
@@ -631,10 +653,28 @@ async function processChatRequest(body, env) {
       if (weatherInfo) context.weather_info = weatherInfo;
     }
 
+    if (wikiRequested) {
+      try {
+        const wikiStart = Date.now();
+        wikiInfo = await fetchWikipediaContext(
+          { ...analysis, trip_id: tripId, original_question: question },
+          tripJson,
+          env
+        );
+        wikiMs = Date.now() - wikiStart;
+        if (wikiInfo && (wikiInfo.found || wikiInfo.error)) {
+          context.wikipedia_info = wikiInfo;
+        }
+      } catch (e) {
+        wikiInfo = { source: "wikipedia", found: false, error: String(e) };
+      }
+    }
+
     const questionNorm = normalizeText(question);
 
     const needsThinking =
       isRecommendationIntent ||
+      wikiRequested ||
       analysis.scope === "trip_analysis" ||
       questionNorm.includes("conflicto") ||
       questionNorm.includes("pesado") ||
@@ -774,6 +814,13 @@ Clima:
 - Si context.weather_info.type = "weather_error", dilo de forma breve y ofrece volver a intentar con ciudad o zona más específica.
 - No inventes pronósticos por hora o por día si no están en context.weather_info.
 
+Wikipedia (guía urbano/histórica/artística):
+- Si context.wikipedia_info existe y found=true, úsalo como FUENTE PRINCIPAL para datos urbanos, históricos, artísticos, culturales o de contexto del lugar.
+- Prioriza title, description y extract de wikipedia_info para responder esos temas.
+- Si wikipedia_info.content_urls.desktop existe, compártelo como enlace para ampliar.
+- Si wikipedia_info.found=false o tiene error, dilo breve y responde con conocimiento general prudente sin inventar hechos específicos.
+- No atribuyas a Wikipedia datos que no estén en wikipedia_info.
+
 Rutas:
 - Si transport_info.type = “calculated_route”, usa transport_info como fuente ÚNICA para distancias y tiempos. Prohibido usar conocimiento propio sobre distancias, tiempos o rutas.
 - Base temporal de rutas:
@@ -897,6 +944,11 @@ No ofrezcas capacidades que no tienes, ni insinúes que podrías hacerlo más ad
       recommendations_next_day_risk: recommendationsInfo?.operational_validation?.next_day_risk?.level || null,
       recommendations_location_source: recommendationsInfo?.operational_validation?.location_source || null,
       location_context: analysis.location_context || null,
+      wiki_used: Boolean(wikiInfo?.found),
+      wiki_query: analysis.wiki_query || null,
+      wiki_title: wikiInfo?.title || null,
+      wiki_url: wikiInfo?.content_urls?.desktop || null,
+      wiki_error: wikiInfo?.error || null,
       gps_requested: Boolean(locationRequestTriggered),
       gps_permission_state: locationPermissionState || null,
       gps_coords_sent: Boolean(userLocation),
@@ -920,6 +972,7 @@ No ofrezcas capacidades que no tienes, ni insinúes que podrías hacerlo más ad
       latency_route_ms: routeMs,
       latency_recommendations_ms: recommendationsMs,
       latency_weather_ms: weatherMs,
+      latency_wiki_ms: wikiMs,
       latency_llm_ms: llmMs,
       tool_route_status: transportInfo
         ? (transportInfo.type === "calculated_route" ? "ok" : transportInfo.type)
@@ -930,9 +983,13 @@ No ofrezcas capacidades que no tienes, ni insinúes que podrías hacerlo más ad
       tool_weather_status: weatherInfo
         ? (weatherInfo.type === "weather_error" ? "error" : "ok")
         : ((intent === "weather" || isRecommendationIntent) ? "none" : null),
+      tool_wiki_status: wikiInfo
+        ? (wikiInfo.found ? "ok" : (wikiInfo.error ? "error" : "empty"))
+        : (wikiRequested ? "none" : null),
       cache_route_hit: Boolean(transportInfo?.cache_hit),
       cache_recommendations_hit: Boolean(recommendationsInfo?.cache_hit),
       cache_weather_hit: Boolean(weatherInfo?.cache_hit),
+      cache_wiki_hit: Boolean(wikiInfo?.cache_hit),
       used_transport_in_answer:
         answer.includes("estimado") ||
         answer.includes("Google Maps") ||
@@ -1641,8 +1698,11 @@ export default {
           log.weather_forecast_tomorrow_max_c != null || log.weather_forecast_tomorrow_min_c != null
             ? `${log.weather_forecast_tomorrow_min_c ?? "—"}° / ${log.weather_forecast_tomorrow_max_c ?? "—"}°${log.weather_forecast_tomorrow_rain_prob != null ? ` • lluvia ${log.weather_forecast_tomorrow_rain_prob}%` : ""}`
             : "—";
-        const obs = `total ${log.latency_total_ms ?? "—"}ms | cls ${log.latency_classifier_ms ?? "—"} | llm ${log.latency_llm_ms ?? "—"} | route ${log.latency_route_ms ?? "—"} | rec ${log.latency_recommendations_ms ?? "—"} | weather ${log.latency_weather_ms ?? "—"}`;
-        const toolStatus = `route:${escapeHtml(log.tool_route_status || "—")} (cache:${log.cache_route_hit ? "hit" : "miss"}, ${escapeHtml(log.route_time_basis || "—")}) | rec:${escapeHtml(log.tool_recommendations_status || "—")} (cache:${log.cache_recommendations_hit ? "hit" : "miss"}) | weather:${escapeHtml(log.tool_weather_status || "—")} (cache:${log.cache_weather_hit ? "hit" : "miss"})`;
+        const obs = `total ${log.latency_total_ms ?? "—"}ms | cls ${log.latency_classifier_ms ?? "—"} | llm ${log.latency_llm_ms ?? "—"} | route ${log.latency_route_ms ?? "—"} | rec ${log.latency_recommendations_ms ?? "—"} | weather ${log.latency_weather_ms ?? "—"} | wiki ${log.latency_wiki_ms ?? "—"}`;
+        const toolStatus = `route:${escapeHtml(log.tool_route_status || "—")} (cache:${log.cache_route_hit ? "hit" : "miss"}, ${escapeHtml(log.route_time_basis || "—")}) | rec:${escapeHtml(log.tool_recommendations_status || "—")} (cache:${log.cache_recommendations_hit ? "hit" : "miss"}) | weather:${escapeHtml(log.tool_weather_status || "—")} (cache:${log.cache_weather_hit ? "hit" : "miss"}) | wiki:${escapeHtml(log.tool_wiki_status || "—")} (cache:${log.cache_wiki_hit ? "hit" : "miss"})`;
+        const wikiStatus = log.wiki_used
+          ? `✅ ${escapeHtml(log.wiki_title || "Artículo")}<br><small style="color:#555;">${escapeHtml(log.wiki_query || "")}</small><br><small style="color:#0a6;">${escapeHtml(log.wiki_url || "")}</small>`
+          : (log.tool_wiki_status ? `<small style="color:#555;">${escapeHtml(log.tool_wiki_status)}</small>${log.wiki_error ? `<br><small style="color:#c00;">${escapeHtml(log.wiki_error)}</small>` : ""}` : "—");
         return `
   <tr${rowStyle}>
     <td>${escapeHtml(log.created_at || "")}</td>
@@ -1671,6 +1731,7 @@ export default {
     <td style="max-width:220px; white-space:pre-wrap; font-size:11px;">${log.recommendations_used ? `✅ ${log.recommendations_count} resultados<br><small style="color:#555;">${escapeHtml(log.recommendations_query || "")}</small>${log.recommendations_bias_used ? `<br><small style='color:#22a;'>📍 source: ${escapeHtml(log.recommendations_location_source || "hotel")}</small>` : ""}<br><small style="color:#0a6;">ops validadas: ${escapeHtml(String(log.recommendations_operational_validated ?? "—"))}</small><br><small style="color:#555;">riesgo mañana: ${escapeHtml(log.recommendations_next_day_risk || "—")}</small>` : ((log.intent === "recommendation" || log.intent === "nearby_places") ? `<span style="color:#c00;">Sin resultados<br><small>${escapeHtml(log.recommendations_error || "")}</small></span>` : "—")}</td>
     <td style="max-width:180px; white-space:pre-wrap; font-size:11px;">${log.gps_requested ? `solicitado<br><small style="color:#555;">permiso: ${escapeHtml(log.gps_permission_state || "—")}</small><br><small style="color:#0a6;">coords: ${log.gps_coords_sent ? "sí" : "no"}</small><br><small style="color:#666;">${log.gps_lat ?? "—"}, ${log.gps_lon ?? "—"}</small>` : "—"}</td>
     <td style="max-width:180px; white-space:pre-wrap; font-size:11px;">${weatherStatus}</td>
+    <td style="max-width:240px; white-space:pre-wrap; font-size:11px;">${wikiStatus}</td>
     <td style="max-width:180px; white-space:pre-wrap; font-size:11px;">${weatherNow}</td>
     <td style="max-width:220px; white-space:pre-wrap; font-size:11px;">${weatherTomorrow}<br><small style="color:#555;">días consultados: ${escapeHtml(String(log.weather_forecast_days ?? "—"))}</small></td>
     <td style="color:#c00; max-width:180px; white-space:pre-wrap; font-size:11px;">${escapeHtml(log.weather_error || "")}</td>
@@ -1748,6 +1809,7 @@ export default {
         <th>🏪 Recomendaciones</th>
         <th>📍 GPS</th>
         <th>🌤️ Weather</th>
+        <th>📚 Wikipedia</th>
         <th>🌡️ Clima actual</th>
         <th>📅 Mañana</th>
         <th>⚠️ Error clima</th>
@@ -1798,6 +1860,11 @@ export default {
         lines.push(`Route departure time: ${log.route_departure_time || ""}`);
         lines.push(`Recommendations status: ${log.tool_recommendations_status || ""}`);
         lines.push(`Recommendations location source: ${log.recommendations_location_source || ""}`);
+        lines.push(`Wikipedia status: ${log.tool_wiki_status || ""}`);
+        lines.push(`Wikipedia query: ${log.wiki_query || ""}`);
+        lines.push(`Wikipedia title: ${log.wiki_title || ""}`);
+        lines.push(`Wikipedia url: ${log.wiki_url || ""}`);
+        lines.push(`Wikipedia error: ${log.wiki_error || ""}`);
         lines.push(`GPS requested: ${log.gps_requested ? "yes" : "no"}`);
         lines.push(`GPS permission: ${log.gps_permission_state || ""}`);
         lines.push(`GPS coords sent: ${log.gps_coords_sent ? "yes" : "no"} (${log.gps_lat ?? ""}, ${log.gps_lon ?? ""})`);
@@ -1806,7 +1873,7 @@ export default {
         lines.push(`Clima actual: ${log.weather_current_temp_c ?? ""}C ${log.weather_current_condition || ""}`);
         lines.push(`Mañana: ${log.weather_forecast_tomorrow_min_c ?? ""}/${log.weather_forecast_tomorrow_max_c ?? ""}C lluvia ${log.weather_forecast_tomorrow_rain_prob ?? ""}%`);
         lines.push(`Error clima: ${log.weather_error || ""}`);
-        lines.push(`Latencias(ms): total=${log.latency_total_ms ?? ""}, cls=${log.latency_classifier_ms ?? ""}, llm=${log.latency_llm_ms ?? ""}, route=${log.latency_route_ms ?? ""}, rec=${log.latency_recommendations_ms ?? ""}, weather=${log.latency_weather_ms ?? ""}`);
+        lines.push(`Latencias(ms): total=${log.latency_total_ms ?? ""}, cls=${log.latency_classifier_ms ?? ""}, llm=${log.latency_llm_ms ?? ""}, route=${log.latency_route_ms ?? ""}, rec=${log.latency_recommendations_ms ?? ""}, weather=${log.latency_weather_ms ?? ""}, wiki=${log.latency_wiki_ms ?? ""}`);
         lines.push("");
       }
 
@@ -1833,14 +1900,15 @@ export default {
       const headers = [
         "created_at", "trip_id", "intent", "scope", "city",
         "question", "answer",
-        "tool_route_status", "tool_recommendations_status", "tool_weather_status",
+        "tool_route_status", "tool_recommendations_status", "tool_weather_status", "tool_wiki_status",
+        "wiki_used", "wiki_query", "wiki_title", "wiki_url", "wiki_error",
         "gps_requested", "gps_permission_state", "gps_coords_sent", "gps_lat", "gps_lon",
         "recommendations_location_source", "location_context",
         "route_time_basis", "route_departure_time",
         "weather_location", "weather_current_temp_c", "weather_current_condition",
         "weather_forecast_tomorrow_min_c", "weather_forecast_tomorrow_max_c", "weather_forecast_tomorrow_rain_prob",
         "weather_error",
-        "latency_total_ms", "latency_classifier_ms", "latency_llm_ms", "latency_route_ms", "latency_recommendations_ms", "latency_weather_ms"
+        "latency_total_ms", "latency_classifier_ms", "latency_llm_ms", "latency_route_ms", "latency_recommendations_ms", "latency_weather_ms", "latency_wiki_ms"
       ];
 
       const rows = [headers.map(csvValue).join(",")];
@@ -1848,14 +1916,15 @@ export default {
         const row = [
           log.created_at, log.trip_id, log.intent, log.scope, log.city,
           log.question, log.answer,
-          log.tool_route_status, log.tool_recommendations_status, log.tool_weather_status,
+          log.tool_route_status, log.tool_recommendations_status, log.tool_weather_status, log.tool_wiki_status,
+          log.wiki_used, log.wiki_query, log.wiki_title, log.wiki_url, log.wiki_error,
           log.gps_requested, log.gps_permission_state, log.gps_coords_sent, log.gps_lat, log.gps_lon,
           log.recommendations_location_source, log.location_context,
           log.route_time_basis, log.route_departure_time,
           log.weather_location, log.weather_current_temp_c, log.weather_current_condition,
           log.weather_forecast_tomorrow_min_c, log.weather_forecast_tomorrow_max_c, log.weather_forecast_tomorrow_rain_prob,
           log.weather_error,
-          log.latency_total_ms, log.latency_classifier_ms, log.latency_llm_ms, log.latency_route_ms, log.latency_recommendations_ms, log.latency_weather_ms
+          log.latency_total_ms, log.latency_classifier_ms, log.latency_llm_ms, log.latency_route_ms, log.latency_recommendations_ms, log.latency_weather_ms, log.latency_wiki_ms
         ];
         rows.push(row.map(csvValue).join(","));
       }
