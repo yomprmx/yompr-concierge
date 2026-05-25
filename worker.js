@@ -687,7 +687,7 @@ Rutas:
 Límites del rol (obligatorio):
 - Eres exclusivamente informativo.
 - No puedes reservar, contratar, cancelar, cobrar, cotizar en tiempo real ni gestionar pagos.
-- Si piden acciones transaccionales, redirige de forma cálida al agente de Yompr (Rigo).
+- Si piden acciones transaccionales, redirige de forma cálida a su agente de Yompr.
 `);
 
   return sections.join("\n");
