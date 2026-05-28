@@ -2274,6 +2274,8 @@ export default {
             &nbsp;|&nbsp;
             <button type="button" onclick="editAccessCode('${escapeHtml(t.id)}','${escapeHtml(t.accessCode || "")}')" style="border:none; background:#1d4ed8; color:#fff; padding:4px 8px; border-radius:6px; cursor:pointer;">Editar clave</button>
             &nbsp;|&nbsp;
+            <button type="button" onclick="replaceTripJson('${escapeHtml(t.id)}')" style="border:none; background:#0f766e; color:#fff; padding:4px 8px; border-radius:6px; cursor:pointer;">Reemplazar JSON</button>
+            &nbsp;|&nbsp;
             <button type="button" onclick="deleteTrip('${escapeHtml(t.id)}')" style="border:none; background:#b91c1c; color:#fff; padding:4px 8px; border-radius:6px; cursor:pointer;">Eliminar</button>
           </td>
         </tr>
@@ -2289,6 +2291,7 @@ export default {
   <p><a href="/admin/logs">Ver logs</a> | <a href="/admin/logout">Cerrar sesión</a></p>
   <p>Sube aquí el archivo JSON completo del viaje.</p>
   <input type="file" id="jsonFile" accept=".json,application/json" />
+  <input type="file" id="replaceJsonFile" accept=".json,application/json" style="display:none;" />
   <br><br>
   <button onclick="uploadTrip()">Guardar viaje</button>
   <div id="result" style="margin-top:20px;"></div>
@@ -2317,6 +2320,8 @@ export default {
   </div>
 
   <script>
+    let replaceTargetTripId = "";
+
     async function uploadTrip() {
       const fileInput = document.getElementById("jsonFile");
       const result = document.getElementById("result");
@@ -2343,6 +2348,42 @@ export default {
         (data.link ? '<p><a href="' + data.link + '" target="_blank">Abrir viaje</a></p>' : "") +
         (data.portal_link ? '<p><a href="' + data.portal_link + '" target="_blank">Abrir por portal</a></p>' : "");
     }
+
+    function replaceTripJson(tripId) {
+      replaceTargetTripId = tripId;
+      const input = document.getElementById("replaceJsonFile");
+      input.value = "";
+      input.click();
+    }
+
+    document.getElementById("replaceJsonFile").addEventListener("change", async (event) => {
+      const file = event.target.files?.[0];
+      if (!file || !replaceTargetTripId) return;
+      const result = document.getElementById("result");
+      const ok = confirm("¿Reemplazar el JSON del trip " + replaceTargetTripId + "?");
+      if (!ok) return;
+
+      try {
+        const jsonText = await file.text();
+        const res = await fetch("/api/admin/replace-trip-json", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tripId: replaceTargetTripId,
+            jsonText
+          })
+        });
+        const data = await res.json();
+        result.innerHTML =
+          "<p><b>Resultado:</b> " + (data.message || "Resultado desconocido") + "</p>" +
+          (data.trip_id ? "<p><b>Trip ID:</b> " + data.trip_id + "</p>" : "") +
+          (data.portal_link ? '<p><a href="' + data.portal_link + '" target="_blank">Abrir por portal</a></p>' : "");
+        alert(data.message || "Resultado desconocido");
+        if (res.ok && data.success) location.reload();
+      } catch (error) {
+        alert("No se pudo reemplazar el JSON: " + String(error));
+      }
+    });
 
     async function deleteTrip(tripId) {
       if (!confirm("¿Eliminar trip " + tripId + "? Esta acción no se puede deshacer.")) return;
@@ -2462,6 +2503,60 @@ export default {
         });
       } catch (e) {
         return Response.json({ success: false, message: "No se pudo actualizar la clave.", error: String(e) }, { status: 400 });
+      }
+    }
+
+    if (url.pathname === "/api/admin/replace-trip-json" && request.method === "POST") {
+      const blocked = await requireAdminAuth(request, env);
+      if (blocked) return blocked;
+      try {
+        const body = await request.json();
+        const tripId = String(body?.tripId || "").trim();
+        const jsonText = String(body?.jsonText || "");
+
+        if (!tripId || isSystemTripKey(tripId)) {
+          return Response.json({ success: false, message: "Trip inválido." }, { status: 400 });
+        }
+        if (!jsonText) {
+          return Response.json({ success: false, message: "No se recibió contenido JSON." }, { status: 400 });
+        }
+
+        const currentTrip = await env.TRIPS.get(tripId);
+        if (!currentTrip) {
+          return Response.json({ success: false, message: "Trip no encontrado." }, { status: 404 });
+        }
+
+        const tripJson = JSON.parse(jsonText);
+        const detectedTripId =
+          tripJson?.trip?.tripIdentifier ||
+          tripJson?.trip?.id ||
+          tripJson?.flightReservations?.[0]?.tripID ||
+          tripJson?.hotelVouchers?.[0]?.tripID ||
+          tripJson?.serviceBookings?.[0]?.tripID ||
+          "";
+
+        if (detectedTripId && String(detectedTripId).trim() !== tripId) {
+          return Response.json({
+            success: false,
+            message: `El JSON parece pertenecer a otro trip (${detectedTripId}). Debe coincidir con ${tripId}.`
+          }, { status: 400 });
+        }
+
+        await env.TRIPS.put(tripId, JSON.stringify(tripJson));
+        const meta = await getTripMeta(env, tripId);
+        const accessCode = normalizeAccessCode(meta.access_code || "");
+        return Response.json({
+          success: true,
+          message: `JSON reemplazado correctamente para ${tripId}.`,
+          trip_id: tripId,
+          portal_link: accessCode ? `/c/${encodeURIComponent(accessCode)}` : null
+        });
+      } catch (e) {
+        return Response.json({
+          success: false,
+          message: "No se pudo reemplazar el JSON del trip.",
+          error: String(e)
+        }, { status: 400 });
       }
     }
 
