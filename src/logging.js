@@ -57,6 +57,8 @@ export async function saveChatLog(env, log) {
       gps_requested: log.gps_requested || false,
       gps_permission_state: log.gps_permission_state || null,
       gps_coords_sent: log.gps_coords_sent || false,
+      gps_accuracy_m: log.gps_accuracy_m ?? null,
+      gps_precision_ok: log.gps_precision_ok ?? null,
       gps_lat: log.gps_lat ?? null,
       gps_lon: log.gps_lon ?? null,
       weather_used: log.weather_used || false,

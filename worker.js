@@ -15,6 +15,7 @@ const PRIVACY_REASK_CONTINUOUS_MS = 48 * 60 * 60 * 1000;
 const PRIVACY_CONTINUOUS_GAP_MS = 6 * 60 * 60 * 1000;
 const PRIVACY_POLICY_VERSION = "2026-05-v1";
 const CHAT_WELCOME_MESSAGE = "Bienvenido. Soy Tho, tu concierge privado de Yompr. Estoy aquí para acompañarte en cada etapa del viaje con una atención cálida, precisa y cuidadosamente personalizada.\n\nPuedo ayudarte con logística de vuelos, hoteles y traslados, recomendaciones de restaurantes y experiencias, rutas optimizadas, contexto cultural e histórico de lugares, y sugerencias adaptadas al clima y al ritmo real de tu itinerario.\n\nSi lo prefieres, también puedo priorizar opciones cerca de tu ubicación actual para resolver planes en el momento. ¿Con qué te gustaría empezar hoy?";
+const PRECISE_GPS_MAX_ACCURACY_M = 120;
 
 function normalizeWrappedUrls(text) {
   if (!text) return text;
@@ -537,9 +538,21 @@ function sanitizeUserLocation(raw) {
   if (!raw || typeof raw !== "object") return null;
   const lat = Number(raw.lat);
   const lon = Number(raw.lon);
+  const accuracy = Number(raw.accuracy);
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
   if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
-  return { lat, lon };
+  return {
+    lat,
+    lon,
+    accuracy: Number.isFinite(accuracy) && accuracy >= 0 ? accuracy : null
+  };
+}
+
+function isPreciseUserLocation(userLocation) {
+  if (!userLocation) return false;
+  if (!Number.isFinite(userLocation.lat) || !Number.isFinite(userLocation.lon)) return false;
+  if (!Number.isFinite(userLocation.accuracy)) return false;
+  return userLocation.accuracy <= PRECISE_GPS_MAX_ACCURACY_M;
 }
 
 function roundCoord(value) {
@@ -711,6 +724,7 @@ async function processChatRequest(body, env) {
       locationRetry = false
     } = body;
     const userLocation = sanitizeUserLocation(body.userLocation);
+    const userLocationIsPrecise = isPreciseUserLocation(userLocation);
 
     const tripText = await env.TRIPS.get(tripId);
 
@@ -730,7 +744,7 @@ async function processChatRequest(body, env) {
     const classifierMs = Date.now() - classifierStart;
     const gpsRecommendedByAi = shouldRequestGpsForRecommendation(analysis, question);
 
-    if (gpsRecommendedByAi && !userLocation && !locationRequestTriggered && !locationRetry) {
+    if (gpsRecommendedByAi && !userLocationIsPrecise && !locationRequestTriggered && !locationRetry) {
       await saveChatLog(env, {
         trip_id: tripId,
         question,
@@ -742,20 +756,24 @@ async function processChatRequest(body, env) {
         gps_requested: true,
         gps_permission_state: "not_requested_yet",
         gps_coords_sent: false,
+        gps_accuracy_m: userLocation?.accuracy ?? null,
         tool_recommendations_status: "needs_location"
       });
       return {
         status: 200,
         payload: {
           requires_location: true,
+          requires_precise_location: true,
           location_reason: "nearby_recommendation",
-          answer: "Para darte recomendaciones realmente cerca de ti, necesito usar tu ubicación actual."
+          answer: "Para darte recomendaciones realmente cerca de ti, necesito tu ubicación actual con precisión alta."
         }
       };
     }
 
-    if (gpsRecommendedByAi && !userLocation && locationRetry) {
-      const noGpsAnswer = "No pude acceder a tu ubicación actual. Revisa permisos de ubicación del navegador y vuelve a tocar Compartir ubicación para darte opciones cerca de ti.";
+    if (gpsRecommendedByAi && !userLocationIsPrecise && locationRetry) {
+      const noGpsAnswer = userLocation
+        ? "Recibí tu ubicación, pero no con precisión suficiente. Activa la ubicación precisa en tu iPhone (Ajustes > Safari > Ubicación > Precisa) y vuelve a compartir ubicación."
+        : "No pude acceder a tu ubicación actual. Revisa permisos de ubicación del navegador y vuelve a tocar Compartir ubicación para darte opciones cerca de ti.";
       await saveChatLog(env, {
         trip_id: tripId,
         question,
@@ -767,6 +785,7 @@ async function processChatRequest(body, env) {
         gps_requested: true,
         gps_permission_state: locationPermissionState || "unknown",
         gps_coords_sent: false,
+        gps_accuracy_m: userLocation?.accuracy ?? null,
         tool_recommendations_status: "location_unavailable"
       });
       return {
@@ -774,6 +793,8 @@ async function processChatRequest(body, env) {
         payload: {
           answer: noGpsAnswer,
           intent: analysis.intent || "recommendation",
+          requires_location: true,
+          requires_precise_location: true,
           location_source: null
         }
       };
@@ -1054,6 +1075,8 @@ async function processChatRequest(body, env) {
       gps_requested: Boolean(locationRequestTriggered),
       gps_permission_state: locationPermissionState || null,
       gps_coords_sent: Boolean(userLocation),
+      gps_accuracy_m: userLocation?.accuracy ?? null,
+      gps_precision_ok: userLocationIsPrecise,
       gps_lat: roundCoord(userLocation?.lat),
       gps_lon: roundCoord(userLocation?.lon),
       weather_used: Boolean(weatherInfo),
@@ -1150,6 +1173,8 @@ const CHAT_CLIENT_JS = String.raw`
   let isSending = false;
   const GPS_CONSENT_KEY = "yompr_gps_consent_until";
   const GPS_CONSENT_TTL_MS = 24 * 60 * 60 * 1000;
+  const PRECISE_LOCATION_MAX_ACCURACY_M = 120;
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent || "");
 
   function syncViewportHeight() {
     const vv = window.visualViewport;
@@ -1159,12 +1184,27 @@ const CHAT_CLIENT_JS = String.raw`
     document.documentElement.style.setProperty("--vvh", h + "px");
   }
 
-  function getCurrentLocation() {
+  async function getLocationPermissionState() {
+    try {
+      if (!navigator.permissions || !navigator.permissions.query) return "unknown";
+      const p = await navigator.permissions.query({ name: "geolocation" });
+      return p && p.state ? p.state : "unknown";
+    } catch (_) {
+      return "unknown";
+    }
+  }
+
+  function getCurrentLocation(requirePrecise) {
     return new Promise(function(resolve) {
       if (!navigator.geolocation) {
         resolve({ coords: null, permissionState: "unavailable" });
         return;
       }
+      getLocationPermissionState().then(function(preState) {
+        if (preState === "denied") {
+          resolve({ coords: null, permissionState: "denied_precheck" });
+          return;
+        }
       var resolved = false;
       var timeoutId = setTimeout(function() {
         if (resolved) return;
@@ -1172,7 +1212,7 @@ const CHAT_CLIENT_JS = String.raw`
         resolve({ coords: null, permissionState: "timeout" });
       }, 10000);
       navigator.geolocation.getCurrentPosition(
-        function(position) {
+        async function(position) {
           if (resolved) return;
           resolved = true;
           clearTimeout(timeoutId);
@@ -1181,14 +1221,23 @@ const CHAT_CLIENT_JS = String.raw`
             resolve({ coords: null, permissionState: "error_no_coords" });
             return;
           }
-          resolve({
+          const locationPayload = {
             coords: {
               lat: coords.latitude,
               lon: coords.longitude,
               accuracy: coords.accuracy || null
             },
             permissionState: "granted"
-          });
+          };
+          if (
+            requirePrecise &&
+            Number.isFinite(locationPayload.coords.accuracy) &&
+            locationPayload.coords.accuracy > PRECISE_LOCATION_MAX_ACCURACY_M
+          ) {
+            const perm = await getLocationPermissionState();
+            locationPayload.permissionState = perm === "granted" ? "granted_approximate" : perm;
+          }
+          resolve(locationPayload);
         },
         function(err) {
           if (resolved) return;
@@ -1198,11 +1247,12 @@ const CHAT_CLIENT_JS = String.raw`
           resolve({ coords: null, permissionState: denied ? "denied" : "error" });
         },
         {
-          enableHighAccuracy: false,
-          timeout: 8000,
-          maximumAge: 120000
+          enableHighAccuracy: true,
+          timeout: 12000,
+          maximumAge: 0
         }
       );
+      });
     });
   }
 
@@ -1248,13 +1298,13 @@ const CHAT_CLIENT_JS = String.raw`
     bubble.style.cssText = "max-width:520px;";
 
     const text = document.createElement("div");
-    text.textContent = "Para buscar opciones realmente cerca de ti, comparte tu ubicación actual.";
+    text.textContent = "Para buscar opciones realmente cerca de ti, comparte tu ubicación precisa.";
     text.style.marginBottom = "8px";
     bubble.appendChild(text);
 
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.textContent = "Compartir ubicación";
+    btn.textContent = "Compartir ubicación precisa";
     btn.style.cssText = "background:#0f172a;color:#fff;border:none;border-radius:10px;padding:8px 12px;font-size:13px;cursor:pointer;";
     btn.addEventListener("click", async function() {
       btn.disabled = true;
@@ -1264,7 +1314,7 @@ const CHAT_CLIENT_JS = String.raw`
       } finally {
         if (document.body.contains(btn)) {
           btn.disabled = false;
-          btn.textContent = "Compartir ubicación";
+          btn.textContent = "Compartir ubicación precisa";
         }
       }
     });
@@ -1274,6 +1324,26 @@ const CHAT_CLIENT_JS = String.raw`
     messages.appendChild(row);
     scrollToBottom();
     return row;
+  }
+
+  function addLocationHelpMessage(permissionState, accuracy) {
+    const bits = [];
+    if (permissionState === "denied" || permissionState === "denied_precheck") {
+      bits.push("El permiso de ubicación está bloqueado en el navegador.");
+    } else if (permissionState === "granted_approximate") {
+      bits.push("Recibí tu ubicación, pero con precisión aproximada.");
+    } else {
+      bits.push("No pude obtener una ubicación precisa en este intento.");
+    }
+    if (Number.isFinite(accuracy)) {
+      bits.push("Precisión recibida: " + Math.round(accuracy) + " m.");
+    }
+    if (isIOS) {
+      bits.push("En iPhone: Ajustes > Safari > Ubicación > Precisa, luego vuelve a intentar.");
+    } else {
+      bits.push("Revisa permisos de ubicación del navegador y vuelve a intentar.");
+    }
+    addMessage("assistant", bits.join(" "));
   }
 
   function lockComposer(locked) {
@@ -1506,7 +1576,7 @@ const CHAT_CLIENT_JS = String.raw`
       if (res.ok && data && data.requires_location) {
         const canAutoRetry = hasActiveGpsConsent();
         if (canAutoRetry) {
-          const locationResult = await getCurrentLocation();
+          const locationResult = await getCurrentLocation(true);
           const retryRes = await sendChat(locationResult.coords, true, locationResult.permissionState, true);
           const retryData = await retryRes.json();
           thinkingRow.remove();
@@ -1521,6 +1591,7 @@ const CHAT_CLIENT_JS = String.raw`
             setGpsConsentActive();
           } else {
             clearGpsConsent();
+            addLocationHelpMessage(locationResult.permissionState, locationResult.coords?.accuracy);
           }
           if (retryData.location_source === "user_location") {
             addLocationBadge();
@@ -1533,7 +1604,7 @@ const CHAT_CLIENT_JS = String.raw`
           thinkingRow.remove();
           let requestRow = null;
           requestRow = addLocationRequestCard(async function() {
-            const locationResult = await getCurrentLocation();
+            const locationResult = await getCurrentLocation(true);
             const retryRes = await sendChat(locationResult.coords, true, locationResult.permissionState, true);
             const retryData = await retryRes.json();
             if (requestRow) requestRow.remove();
@@ -1549,9 +1620,7 @@ const CHAT_CLIENT_JS = String.raw`
               setGpsConsentActive();
             } else {
               clearGpsConsent();
-              if (locationResult.permissionState !== "not_requested") {
-                addMessage("assistant", "No se obtuvo permiso de ubicación (" + locationResult.permissionState + ").");
-              }
+              addLocationHelpMessage(locationResult.permissionState, locationResult.coords?.accuracy);
             }
             if (retryData.location_source === "user_location") {
               addLocationBadge();
@@ -1934,7 +2003,7 @@ export default {
     <td style="color:#c00; max-width:160px; white-space:pre-wrap;">${escapeHtml(log.geocode_origin_error || "")}</td>
     <td style="color:#c00; max-width:160px; white-space:pre-wrap;">${escapeHtml(log.geocode_destination_error || "")}</td>
     <td style="max-width:220px; white-space:pre-wrap; font-size:11px;">${log.recommendations_used ? `✅ ${log.recommendations_count} resultados<br><small style="color:#555;">${escapeHtml(log.recommendations_query || "")}</small>${log.recommendations_bias_used ? `<br><small style='color:#22a;'>📍 source: ${escapeHtml(log.recommendations_location_source || "hotel")}</small>` : ""}<br><small style="color:#0a6;">ops validadas: ${escapeHtml(String(log.recommendations_operational_validated ?? "—"))}</small><br><small style="color:#555;">riesgo mañana: ${escapeHtml(log.recommendations_next_day_risk || "—")}</small>` : ((log.intent === "recommendation" || log.intent === "nearby_places") ? `<span style="color:#c00;">Sin resultados<br><small>${escapeHtml(log.recommendations_error || "")}</small></span>` : "—")}</td>
-    <td style="max-width:180px; white-space:pre-wrap; font-size:11px;">${log.gps_requested ? `solicitado<br><small style="color:#555;">permiso: ${escapeHtml(log.gps_permission_state || "—")}</small><br><small style="color:#0a6;">coords: ${log.gps_coords_sent ? "sí" : "no"}</small><br><small style="color:#666;">${log.gps_lat ?? "—"}, ${log.gps_lon ?? "—"}</small>` : "—"}</td>
+    <td style="max-width:180px; white-space:pre-wrap; font-size:11px;">${log.gps_requested ? `solicitado<br><small style="color:#555;">permiso: ${escapeHtml(log.gps_permission_state || "—")}</small><br><small style="color:#0a6;">coords: ${log.gps_coords_sent ? "sí" : "no"}${log.gps_precision_ok === true ? " • precisa" : (log.gps_precision_ok === false ? " • aprox" : "")}</small><br><small style="color:#666;">acc: ${log.gps_accuracy_m ?? "—"}m</small><br><small style="color:#666;">${log.gps_lat ?? "—"}, ${log.gps_lon ?? "—"}</small>` : "—"}</td>
     <td style="max-width:180px; white-space:pre-wrap; font-size:11px;">${weatherStatus}</td>
     <td style="max-width:240px; white-space:pre-wrap; font-size:11px;">${wikiStatus}</td>
     <td style="max-width:180px; white-space:pre-wrap; font-size:11px;">${weatherNow}</td>
@@ -2073,6 +2142,8 @@ export default {
         lines.push(`GPS requested: ${log.gps_requested ? "yes" : "no"}`);
         lines.push(`GPS permission: ${log.gps_permission_state || ""}`);
         lines.push(`GPS coords sent: ${log.gps_coords_sent ? "yes" : "no"} (${log.gps_lat ?? ""}, ${log.gps_lon ?? ""})`);
+        lines.push(`GPS accuracy(m): ${log.gps_accuracy_m ?? ""}`);
+        lines.push(`GPS precise: ${log.gps_precision_ok === true ? "yes" : (log.gps_precision_ok === false ? "no" : "")}`);
         lines.push(`Weather status: ${log.tool_weather_status || ""}`);
         lines.push(`Clima ubicación: ${log.weather_location || ""}`);
         lines.push(`Clima actual: ${log.weather_current_temp_c ?? ""}C ${log.weather_current_condition || ""}`);
@@ -2107,7 +2178,7 @@ export default {
         "question", "answer",
         "tool_route_status", "tool_recommendations_status", "tool_weather_status", "tool_wiki_status",
         "wiki_used", "wiki_query", "wiki_title", "wiki_url", "wiki_error",
-        "gps_requested", "gps_permission_state", "gps_coords_sent", "gps_lat", "gps_lon",
+        "gps_requested", "gps_permission_state", "gps_coords_sent", "gps_accuracy_m", "gps_precision_ok", "gps_lat", "gps_lon",
         "recommendations_location_source", "location_context",
         "route_time_basis", "route_departure_time",
         "weather_location", "weather_current_temp_c", "weather_current_condition",
@@ -2123,7 +2194,7 @@ export default {
           log.question, log.answer,
           log.tool_route_status, log.tool_recommendations_status, log.tool_weather_status, log.tool_wiki_status,
           log.wiki_used, log.wiki_query, log.wiki_title, log.wiki_url, log.wiki_error,
-          log.gps_requested, log.gps_permission_state, log.gps_coords_sent, log.gps_lat, log.gps_lon,
+          log.gps_requested, log.gps_permission_state, log.gps_coords_sent, log.gps_accuracy_m, log.gps_precision_ok, log.gps_lat, log.gps_lon,
           log.recommendations_location_source, log.location_context,
           log.route_time_basis, log.route_departure_time,
           log.weather_location, log.weather_current_temp_c, log.weather_current_condition,
