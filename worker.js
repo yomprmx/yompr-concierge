@@ -1938,7 +1938,7 @@ export default {
       const blocked = await requireAdminAuth(request, env);
       if (blocked) return blocked;
 
-      const list = await env.CHAT_LOGS.list({ limit: 200 });
+      const list = await env.CHAT_LOGS.list({ limit: 500 });
       const logs = [];
 
       for (const key of list.keys) {
@@ -2036,7 +2036,7 @@ export default {
   <img src="/logo.png" alt="Yompr" style="width:56px; height:56px; object-fit:contain;" />
   <h1>Yompr Concierge Logs</h1>
   <p><a href="/admin">Admin</a> | <a href="/admin/logout">Cerrar sesión</a></p>
-  <p>Últimas 200 preguntas registradas.</p>
+  <p>Últimas 500 preguntas registradas.</p>
   <p>
     <a
       href="/admin/logs.txt"
@@ -2106,7 +2106,7 @@ export default {
       const blocked = await requireAdminAuth(request, env);
       if (blocked) return blocked;
 
-      const list = await env.CHAT_LOGS.list({ limit: 200 });
+      const list = await env.CHAT_LOGS.list({ limit: 500 });
       const logs = [];
       for (const key of list.keys) {
         const value = await env.CHAT_LOGS.get(key.name);
@@ -2165,7 +2165,7 @@ export default {
       const blocked = await requireAdminAuth(request, env);
       if (blocked) return blocked;
 
-      const list = await env.CHAT_LOGS.list({ limit: 200 });
+      const list = await env.CHAT_LOGS.list({ limit: 500 });
       const logs = [];
       for (const key of list.keys) {
         const value = await env.CHAT_LOGS.get(key.name);
