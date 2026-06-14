@@ -622,6 +622,95 @@ function shouldUseWikipedia(analysis, question) {
   );
 }
 
+function getLastConversationMessage(conversationHistory, role) {
+  if (!Array.isArray(conversationHistory)) return null;
+  for (let i = conversationHistory.length - 1; i >= 0; i--) {
+    const item = conversationHistory[i];
+    if (item && item.role === role && typeof item.content === "string" && item.content.trim()) {
+      return item.content.trim();
+    }
+  }
+  return null;
+}
+
+function looksLikeRecommendationAnswer(text) {
+  const q = normalizeText(text || "");
+  return (
+    q.includes("resenas") ||
+    q.includes("reseñas") ||
+    q.includes("estrellas") ||
+    q.includes("google maps") ||
+    q.includes("minutos caminando") ||
+    q.includes("minutos a pie") ||
+    q.includes("abre hasta") ||
+    /\b1\./.test(String(text || ""))
+  );
+}
+
+function isRecommendationFollowupQuestion(question) {
+  const q = normalizeText(question || "").trim();
+  if (!q) return false;
+  return (
+    q.startsWith("y ") ||
+    q.startsWith("y algo") ||
+    q.startsWith("y para") ||
+    q.includes("mas tarde") ||
+    q.includes("más tarde") ||
+    q.includes("caminando") ||
+    q.includes("a pie") ||
+    q.includes("mas barato") ||
+    q.includes("más barato") ||
+    q.includes("mas cerca") ||
+    q.includes("más cerca") ||
+    q.includes("algo para cenar") ||
+    q.includes("un lugar para cenar")
+  );
+}
+
+function shouldCarryRecommendationContext(question, conversationHistory) {
+  if (!isRecommendationFollowupQuestion(question)) return false;
+  const lastAssistant = getLastConversationMessage(conversationHistory, "assistant");
+  return looksLikeRecommendationAnswer(lastAssistant);
+}
+
+function buildClassifierQuestion(question, conversationHistory) {
+  if (!shouldCarryRecommendationContext(question, conversationHistory)) return question;
+  const lastUser = getLastConversationMessage(conversationHistory, "user");
+  const lastAssistant = getLastConversationMessage(conversationHistory, "assistant");
+  const parts = [
+    "Pregunta anterior del cliente:",
+    lastUser || "N/A",
+    "",
+    "Respuesta anterior del concierge:",
+    lastAssistant || "N/A",
+    "",
+    "Seguimiento actual del cliente:",
+    question
+  ];
+  return parts.join("\n");
+}
+
+function inferFollowupRecommendationType(question, previousUserQuestion) {
+  const q = normalizeText(`${previousUserQuestion || ""} ${question || ""}`);
+  if (q.includes("cenar") || q.includes("dinner") || q.includes("comer") || q.includes("restaurant") || q.includes("restaurante")) {
+    return "restaurante";
+  }
+  if (q.includes("cafe") || q.includes("cafeter") || q.includes("coffee")) return "cafe";
+  if (q.includes("bar") || q.includes("copas") || q.includes("tragos")) return "bar";
+  return "restaurante";
+}
+
+function buildFallbackRecommendationQuery(type, city, question, previousUserQuestion) {
+  const q = normalizeText(`${previousUserQuestion || ""} ${question || ""}`);
+  const cityText = city || "";
+  if (type === "bar") return `bar ${cityText}`.trim();
+  if (type === "cafe") return `coffee shop ${cityText}`.trim();
+  if (q.includes("cenar") || q.includes("dinner")) return `family dinner restaurant ${cityText}`.trim();
+  if (q.includes("desayun") || q.includes("breakfast")) return `breakfast restaurant ${cityText}`.trim();
+  if (q.includes("comer") || q.includes("lunch") || q.includes("food")) return `restaurant ${cityText}`.trim();
+  return `${type === "restaurante" ? "restaurant" : type} ${cityText}`.trim();
+}
+
 function buildChatSystemPrompt(options = {}) {
   const {
     includePlanningRules = false,
@@ -757,13 +846,48 @@ async function processChatRequest(body, env) {
     const tripJson = JSON.parse(tripText);
 
     const classifierStart = Date.now();
+    const classifierQuestion = buildClassifierQuestion(question, conversationHistory);
     let analysis = await classifyIntentWithDeepSeek(
-      question,
+      classifierQuestion,
       env,
       tripJson,
       conversationHistory
     );
     const classifierMs = Date.now() - classifierStart;
+    const carryRecommendationContext = shouldCarryRecommendationContext(question, conversationHistory);
+    const previousUserQuestion = getLastConversationMessage(conversationHistory, "user");
+
+    if (carryRecommendationContext) {
+      if (
+        analysis.intent === "clarification" ||
+        analysis.intent === "general" ||
+        analysis.needs_clarification
+      ) {
+        analysis.intent = "recommendation";
+        analysis.scope = analysis.scope === "unknown" ? "specific_item" : (analysis.scope || "specific_item");
+        analysis.tool_needed = "places";
+        analysis.needs_clarification = false;
+        analysis.clarification_question = null;
+      }
+
+      if (userLocationIsPrecise) {
+        analysis.location_context = "current_user_area";
+      }
+
+      if (!analysis.recommendation_type) {
+        analysis.recommendation_type = inferFollowupRecommendationType(question, previousUserQuestion);
+      }
+
+      if (!analysis.recommendation_query) {
+        analysis.recommendation_query = buildFallbackRecommendationQuery(
+          analysis.recommendation_type,
+          analysis.city,
+          question,
+          previousUserQuestion
+        );
+      }
+    }
+
     const gpsRecommendedByAi = shouldRequestGpsForRecommendation(analysis, question);
 
     if (gpsRecommendedByAi && !userLocationIsPrecise && !locationRequestTriggered && !locationRetry) {
