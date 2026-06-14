@@ -1200,58 +1200,88 @@ const CHAT_CLIENT_JS = String.raw`
         resolve({ coords: null, permissionState: "unavailable" });
         return;
       }
+
       getLocationPermissionState().then(function(preState) {
         if (preState === "denied") {
           resolve({ coords: null, permissionState: "denied_precheck" });
           return;
         }
-      var resolved = false;
-      var timeoutId = setTimeout(function() {
-        if (resolved) return;
-        resolved = true;
-        resolve({ coords: null, permissionState: "timeout" });
-      }, 10000);
-      navigator.geolocation.getCurrentPosition(
-        async function(position) {
-          if (resolved) return;
-          resolved = true;
-          clearTimeout(timeoutId);
-          var coords = position && position.coords ? position.coords : null;
-          if (!coords) {
-            resolve({ coords: null, permissionState: "error_no_coords" });
-            return;
-          }
-          const locationPayload = {
-            coords: {
-              lat: coords.latitude,
-              lon: coords.longitude,
-              accuracy: coords.accuracy || null
+
+        const promptLike = preState === "prompt" || preState === "unknown";
+        const attemptTimeoutMs = promptLike ? 30000 : 15000;
+
+        function runAttempt(attemptNumber) {
+          var resolved = false;
+          var timeoutId = setTimeout(function() {
+            if (resolved) return;
+            resolved = true;
+            resolve({ coords: null, permissionState: "timeout" });
+          }, attemptTimeoutMs + 1500);
+
+          navigator.geolocation.getCurrentPosition(
+            async function(position) {
+              if (resolved) return;
+              resolved = true;
+              clearTimeout(timeoutId);
+              var coords = position && position.coords ? position.coords : null;
+              if (!coords) {
+                resolve({ coords: null, permissionState: "error_no_coords" });
+                return;
+              }
+              const locationPayload = {
+                coords: {
+                  lat: coords.latitude,
+                  lon: coords.longitude,
+                  accuracy: coords.accuracy || null
+                },
+                permissionState: "granted"
+              };
+              if (
+                requirePrecise &&
+                Number.isFinite(locationPayload.coords.accuracy) &&
+                locationPayload.coords.accuracy > PRECISE_LOCATION_MAX_ACCURACY_M
+              ) {
+                const perm = await getLocationPermissionState();
+                locationPayload.permissionState = perm === "granted" ? "granted_approximate" : perm;
+              }
+              resolve(locationPayload);
             },
-            permissionState: "granted"
-          };
-          if (
-            requirePrecise &&
-            Number.isFinite(locationPayload.coords.accuracy) &&
-            locationPayload.coords.accuracy > PRECISE_LOCATION_MAX_ACCURACY_M
-          ) {
-            const perm = await getLocationPermissionState();
-            locationPayload.permissionState = perm === "granted" ? "granted_approximate" : perm;
-          }
-          resolve(locationPayload);
-        },
-        function(err) {
-          if (resolved) return;
-          resolved = true;
-          clearTimeout(timeoutId);
-          var denied = err && err.code === 1;
-          resolve({ coords: null, permissionState: denied ? "denied" : "error" });
-        },
-        {
-          enableHighAccuracy: true,
-          timeout: 12000,
-          maximumAge: 0
+            function(err) {
+              if (resolved) return;
+              resolved = true;
+              clearTimeout(timeoutId);
+
+              var code = err && typeof err.code === "number" ? err.code : 0;
+              var denied = code === 1;
+              var unavailable = code === 2;
+              var timeout = code === 3;
+
+              // En la primera autorización algunos navegadores móviles reportan
+              // un error transitorio justo después del prompt. Reintentamos una vez
+              // antes de concluir que realmente falló.
+              if (!denied && attemptNumber === 1 && promptLike) {
+                setTimeout(function() {
+                  runAttempt(2);
+                }, 350);
+                return;
+              }
+
+              resolve({
+                coords: null,
+                permissionState: denied
+                  ? "denied"
+                  : (timeout ? "timeout" : (unavailable ? "unavailable_position" : "error"))
+              });
+            },
+            {
+              enableHighAccuracy: true,
+              timeout: attemptTimeoutMs,
+              maximumAge: 0
+            }
+          );
         }
-      );
+
+        runAttempt(1);
       });
     });
   }
