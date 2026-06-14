@@ -35,6 +35,26 @@ function normalizeWrappedUrls(text) {
   );
 }
 
+function hasAnyUrl(text) {
+  return /https?:\/\/[^\s<>()]+/i.test(String(text || ""));
+}
+
+function appendRecommendationLinks(answer, recommendations) {
+  const base = String(answer || "").trim();
+  const places = Array.isArray(recommendations) ? recommendations : [];
+  if (!places.length) return base;
+  if (hasAnyUrl(base)) return base;
+
+  const linked = places
+    .filter(place => place && place.name && place.maps_link)
+    .slice(0, 3);
+
+  if (!linked.length) return base;
+
+  const lines = linked.map((place, index) => `${index + 1}. ${place.name}\n${place.maps_link}`);
+  return `${base}\n\nEnlaces de Google Maps:\n\n${lines.join("\n\n")}`;
+}
+
 function parseConversationHistory(value) {
   if (!value) return [];
   try {
@@ -1015,7 +1035,9 @@ async function processChatRequest(body, env) {
     }
 
     const answerRaw = data.choices?.[0]?.message?.content || "No pude responder.";
-    const answer = normalizeWrappedUrls(answerRaw);
+    const answer = normalizeWrappedUrls(
+      appendRecommendationLinks(answerRaw, recommendationsInfo?.places)
+    );
 
     const contextText = JSON.stringify(context);
     const approximateTokens = Math.ceil(contextText.length / 4);
