@@ -660,6 +660,8 @@ Recomendaciones:
 - No inventes lugares fuera de esa lista.
 - Prioriza rating + reseñas + cercanía + ajuste al pedido (tipo/precio/horario).
 - Si location_source = "user_location", habla de ubicación actual y evita referencias al hotel.
+- Si location_source = "user_location", nunca digas ni insinúes "estás en el hotel", "desde tu hotel", "donde te hospedas" o equivalente, salvo que el cliente mencione explícitamente el hotel.
+- Si el cliente pide algo "a pie" o "caminando", solo menciona opciones realmente caminables desde la ubicación actual.
 - Si next_day_risk = "unknown", no menciones riesgo del día siguiente.
 - Si no hay resultados, dilo y ofrece búsqueda alternativa prudente.
 `);

@@ -10,6 +10,29 @@ const PRICE_LEVEL_MAP = {
   "PRICE_LEVEL_VERY_EXPENSIVE": "muy caro ($$$$)"
 };
 
+const FOOD_TYPE_HINTS = [
+  "restaurant",
+  "meal_",
+  "cafe",
+  "coffee",
+  "bakery",
+  "bar",
+  "pizza",
+  "hamburger",
+  "sandwich",
+  "ice_cream"
+];
+
+const LODGING_TYPE_HINTS = [
+  "lodging",
+  "hotel",
+  "hostel",
+  "motel",
+  "resort",
+  "inn",
+  "bed_and_breakfast"
+];
+
 export async function searchPlacesRecommendations(analysis, tripJson, env) {
   if (!env?.GOOGLE_MAPS_KEY) return null;
   const tripId = analysis.trip_id || "unknown";
@@ -106,7 +129,7 @@ export async function searchPlacesRecommendations(analysis, tripJson, env) {
 
     const data = await res.json();
     if (!data.places?.length) return { places: [], query, bias_used: Boolean(locationBias), error: null };
-    const placesRaw = data.places.slice(0, 6).map(p => ({
+    const placesRaw = data.places.slice(0, 8).map(p => ({
       name: p.displayName?.text || null,
       address: p.formattedAddress || null,
       lat: Number.isFinite(p?.location?.latitude) ? p.location.latitude : null,
@@ -120,6 +143,7 @@ export async function searchPlacesRecommendations(analysis, tripJson, env) {
       open_now: typeof p.currentOpeningHours?.openNow === "boolean" ? p.currentOpeningHours.openNow : null,
       maps_link: p.googleMapsUri || null
     }));
+    const placesFiltered = placesRaw.filter(place => isRelevantPlaceForRecommendation(place, analysis));
 
     const nextDayRisk = detectNextDayRisk(
       tripJson,
@@ -128,7 +152,7 @@ export async function searchPlacesRecommendations(analysis, tripJson, env) {
       analysis.original_question
     );
     const places = await validatePlacesOperationally(
-      placesRaw,
+      placesFiltered,
       analysis,
       env,
       hotelAnchor,
@@ -277,6 +301,76 @@ function inferDesiredKeywords(analysis) {
   return Array.from(out);
 }
 
+function isWalkPriorityQuestion(question) {
+  const q = normalizeText(question || "");
+  return (
+    q.includes("a pie") ||
+    q.includes("caminando") ||
+    q.includes("caminable") ||
+    q.includes("walking") ||
+    q.includes("walk")
+  );
+}
+
+function isFoodRecommendation(analysis) {
+  const raw = normalizeText(
+    `${analysis?.recommendation_type || ""} ${analysis?.recommendation_query || ""} ${analysis?.original_question || ""}`
+  );
+  return (
+    raw.includes("restaurant") ||
+    raw.includes("restaurante") ||
+    raw.includes("comer") ||
+    raw.includes("cenar") ||
+    raw.includes("desayun") ||
+    raw.includes("lunch") ||
+    raw.includes("dinner") ||
+    raw.includes("food") ||
+    raw.includes("pizza") ||
+    raw.includes("burger") ||
+    raw.includes("hamburg") ||
+    raw.includes("ensalada") ||
+    raw.includes("salad") ||
+    raw.includes("taco") ||
+    raw.includes("cafe") ||
+    raw.includes("cafeter")
+  );
+}
+
+function includesAnyHint(text, hints) {
+  return hints.some(hint => text.includes(hint));
+}
+
+function isRelevantPlaceForRecommendation(place, analysis) {
+  const typeText = normalizeText(place?.type || "");
+  const nameText = normalizeText(place?.name || "");
+  const descText = normalizeText(place?.description || "");
+  const allText = `${typeText} ${nameText} ${descText}`;
+
+  if (includesAnyHint(allText, LODGING_TYPE_HINTS)) {
+    if (isFoodRecommendation(analysis)) return false;
+  }
+
+  if (isFoodRecommendation(analysis)) {
+    return includesAnyHint(allText, FOOD_TYPE_HINTS);
+  }
+
+  const recommendationType = normalizeText(analysis?.recommendation_type || "");
+  if (recommendationType === "bar") {
+    return allText.includes("bar") || allText.includes("pub") || allText.includes("night_club");
+  }
+  if (recommendationType === "cafe") {
+    return allText.includes("cafe") || allText.includes("coffee") || allText.includes("bakery");
+  }
+  if (recommendationType === "parque") {
+    return allText.includes("park");
+  }
+  if (recommendationType === "museo") {
+    return allText.includes("museum");
+  }
+
+  return true;
+}
+
 async function validatePlacesOperationally(
   places,
   analysis,
@@ -290,6 +384,7 @@ async function validatePlacesOperationally(
   if (!Array.isArray(places) || !places.length) return [];
   const hasHotelAnchor = hotelAnchorGeo?.lat && hotelAnchorGeo?.lon;
   const hasUserLocation = userLocation?.lat && userLocation?.lon;
+  const walkPriority = isWalkPriorityQuestion(analysis?.original_question);
 
   if (!hasHotelAnchor && !hasUserLocation) {
     return places.map(p => ({
@@ -384,8 +479,19 @@ async function validatePlacesOperationally(
       (p?.operational?.travel_from_user_walking_min != null && p.operational.travel_from_user_walking_min <= 24)
     );
     if (ultraNear.length >= 2) ranked = ultraNear.concat(ranked.filter(p => !ultraNear.includes(p)));
+    if (walkPriority) {
+      const trulyWalkable = ranked.filter(p =>
+        (p?.operational?.travel_from_user_walking_min != null && p.operational.travel_from_user_walking_min <= 18) ||
+        (p?.operational?.distance_from_user_km != null && p.operational.distance_from_user_km <= 1.4)
+      );
+      if (trulyWalkable.length) {
+        ranked = trulyWalkable;
+      } else {
+        return [];
+      }
+    }
   } else {
     ranked.sort((a, b) => (b.operational?.score || 0) - (a.operational?.score || 0));
   }
-  return ranked;
+  return ranked.slice(0, 5);
 }
