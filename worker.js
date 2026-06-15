@@ -1,6 +1,6 @@
 import { escapeHtml, normalizeText } from "./src/utils.js";
-import { buildContextByIntent, detectBasicConflicts } from "./src/trip.js";
-import { classifyIntentWithDeepSeek } from "./src/classifier.js";
+import { buildContextByIntent, buildTripSummaryForClassifier, buildTripTimelineForClassifier, detectBasicConflicts } from "./src/trip.js";
+import { classifyIntentWithDeepSeek, mapTaskTypeToIntent } from "./src/classifier.js";
 import { enrichWithTransportInfo } from "./src/routing.js";
 import { searchPlacesRecommendations } from "./src/recommendations.js";
 import { enrichWithWeatherInfo } from "./src/weather.js";
@@ -39,20 +39,65 @@ function hasAnyUrl(text) {
   return /https?:\/\/[^\s<>()]+/i.test(String(text || ""));
 }
 
+function hasGoogleMapsUrl(text) {
+  return /https?:\/\/(?:(?:www\.)?google\.com\/maps\/|maps\.google\.com\/)/i.test(String(text || ""));
+}
+
 function appendRecommendationLinks(answer, recommendations) {
   const base = String(answer || "").trim();
   const places = Array.isArray(recommendations) ? recommendations : [];
   if (!places.length) return base;
-  if (hasAnyUrl(base)) return base;
+  if (hasGoogleMapsUrl(base)) return base;
 
+  const normalizedAnswer = normalizeText(base);
   const linked = places
     .filter(place => place && place.name && place.maps_link)
+    .map(place => {
+      const normalizedName = normalizeText(place.name);
+      const index = normalizedName ? normalizedAnswer.indexOf(normalizedName) : -1;
+      return { place, index };
+    })
+    .sort((a, b) => {
+      const aScore = a.index >= 0 ? a.index : Number.MAX_SAFE_INTEGER;
+      const bScore = b.index >= 0 ? b.index : Number.MAX_SAFE_INTEGER;
+      return aScore - bScore;
+    });
+
+  const exactMatches = linked
+    .filter(item => item.index >= 0)
+    .map(item => item.place)
     .slice(0, 3);
+  const fallbackMatches = linked.map(item => item.place).slice(0, 3);
+  const finalLinks = exactMatches.length ? exactMatches : fallbackMatches;
 
-  if (!linked.length) return base;
+  if (!finalLinks.length) return base;
 
-  const lines = linked.map((place, index) => `${index + 1}. ${place.name}\n${place.maps_link}`);
+  const lines = finalLinks.map((place, index) => `${index + 1}. ${place.name}\n${place.maps_link}`);
   return `${base}\n\nEnlaces de Google Maps:\n\n${lines.join("\n\n")}`;
+}
+
+function appendRouteLinks(answer, transportInfo) {
+  const base = String(answer || "").trim();
+  if (!transportInfo) return base;
+  if (hasGoogleMapsUrl(base)) return base;
+
+  const lines = [];
+  if (transportInfo.maps_link) {
+    lines.push(`Ruta principal\n${transportInfo.maps_link}`);
+  }
+  if (transportInfo.options?.driving?.maps_link) {
+    lines.push(`En coche\n${transportInfo.options.driving.maps_link}`);
+  }
+  if (transportInfo.options?.transit?.maps_link) {
+    lines.push(`En transporte público\n${transportInfo.options.transit.maps_link}`);
+  }
+  if (transportInfo.options?.walking?.maps_link) {
+    lines.push(`Caminando\n${transportInfo.options.walking.maps_link}`);
+  }
+
+  const uniqueLines = [...new Set(lines)].slice(0, 3);
+  if (!uniqueLines.length) return base;
+  return `${base}\n\nEnlaces de Google Maps:\n\n${uniqueLines.join("\n\n")}`;
 }
 
 function parseConversationHistory(value) {
@@ -711,13 +756,309 @@ function buildFallbackRecommendationQuery(type, city, question, previousUserQues
   return `${type === "restaurante" ? "restaurant" : type} ${cityText}`.trim();
 }
 
+function getDefaultTripCity(tripJson, analysis = null) {
+  const analysisCity = analysis?.city || null;
+  if (analysisCity) return analysisCity;
+  const hotelCity = tripJson?.hotelVouchers?.find(h => h?.city || h?.destination || h?.accommodationCity);
+  if (hotelCity) return hotelCity.city || hotelCity.destination || hotelCity.accommodationCity || null;
+  const tripDestination = tripJson?.trip?.destination || "";
+  const first = String(tripDestination).split(",")[0].trim();
+  return first || null;
+}
+
+function getPrimaryHotelAnchor(tripJson, city = null) {
+  const hotels = tripJson?.hotelVouchers || [];
+  if (!hotels.length) return null;
+  const cityNorm = normalizeText(city || "");
+  const match = cityNorm
+    ? hotels.find(h =>
+        normalizeText(h.city || h.destination || h.accommodationCity || "").includes(cityNorm) ||
+        normalizeText(h.accommodationAddress || h.address || "").includes(cityNorm)
+      )
+    : null;
+  const hotel = match || hotels[0];
+  if (!hotel) return null;
+  return {
+    name: hotel.accommodationName || hotel.hotelName || hotel.name || null,
+    address: hotel.accommodationAddress || hotel.address || null,
+    city: hotel.city || hotel.destination || hotel.accommodationCity || city || null
+  };
+}
+
+function hasWeatherSignal(question) {
+  const q = normalizeText(question || "");
+  return (
+    q.includes("clima") ||
+    q.includes("tiempo") ||
+    q.includes("pronostico") ||
+    q.includes("pronóstico") ||
+    q.includes("lluv") ||
+    q.includes("temperatura") ||
+    q.includes("va a estar")
+  );
+}
+
+function hasRouteSignal(question) {
+  const q = normalizeText(question || "");
+  return (
+    q.includes("como llego") ||
+    q.includes("cómo llego") ||
+    q.includes("como llegar") ||
+    q.includes("cómo llegar") ||
+    q.includes("indicaciones") ||
+    q.includes("ruta") ||
+    q.includes("como voy") ||
+    q.includes("cómo voy") ||
+    q.includes("ir al") ||
+    q.includes("ir a la") ||
+    q.includes("llegar al") ||
+    q.includes("llegar a la")
+  );
+}
+
+function inferDateReferenceFromQuestion(question) {
+  const q = normalizeText(question || "");
+  if (q.includes("manana") || q.includes("mañana")) return "mañana";
+  if (q.includes("hoy") || q.includes("ahora") || q.includes("ahorita")) return "hoy";
+  return null;
+}
+
+function inferRouteDestinationFromQuestion(question, city = null) {
+  const raw = String(question || "").trim();
+  const candidates = [
+    /(?:como|cómo)\s+(?:llego|llegar)\s+(?:a|al|a la)\s+(.+?)(?:\?|$|,|\s+y\s+)/i,
+    /(?:para\s+ir\s+(?:a|al|a la))\s+(.+?)(?:\?|$|,|\s+y\s+)/i,
+    /(?:indicaciones\s+(?:a|al|a la))\s+(.+?)(?:\?|$|,|\s+y\s+)/i,
+    /(?:ruta\s+(?:a|al|a la))\s+(.+?)(?:\?|$|,|\s+y\s+)/i
+  ];
+
+  for (const regex of candidates) {
+    const match = raw.match(regex);
+    if (!match?.[1]) continue;
+    const text = match[1].trim().replace(/[.?!]+$/, "");
+    if (!text) continue;
+    return city ? `${text}, ${city}` : text;
+  }
+  return null;
+}
+
+function mergeRecoveredTasks(tasks, recoveredTasks) {
+  let existing = Array.isArray(tasks) ? [...tasks] : [];
+  const hasSpecificRecovered = recoveredTasks.some(task => task && task.type !== "general");
+  if (hasSpecificRecovered) {
+    existing = existing.filter(task => !(task && task.type === "general"));
+  }
+  for (const candidate of recoveredTasks) {
+    if (!candidate) continue;
+    if (existing.some(task => task?.type === candidate.type)) continue;
+    existing.push(candidate);
+  }
+  return existing
+    .map((task, index) => ({ ...task, priority: task.priority || index + 1 }))
+    .sort((a, b) => (a.priority || 99) - (b.priority || 99))
+    .slice(0, 3);
+}
+
+function recoverTasksFromQuestion(question, tripJson, analysis, tasks) {
+  const recovered = [];
+  const city = getDefaultTripCity(tripJson, analysis);
+
+  if (hasWeatherSignal(question) && !tasks.some(task => task?.type === "weather")) {
+    recovered.push({
+      type: "weather",
+      priority: 1,
+      confidence: 0.6,
+      scope: "date",
+      city,
+      date_reference: inferDateReferenceFromQuestion(question),
+      tool_needed: "weather",
+      route_direction: "unknown",
+      route_mode: "all",
+      airport_code: null,
+      place_name: null,
+      origin_query: null,
+      destination_query: null,
+      recommendation_type: null,
+      recommendation_query: null,
+      price_preference: null,
+      location_context: "trip_context",
+      wiki_needed: false,
+      wiki_query: null,
+      needs_clarification: false,
+      clarification_question: null
+    });
+  }
+
+  if (hasRouteSignal(question) && !tasks.some(task => task?.type === "route")) {
+    const hotel = getPrimaryHotelAnchor(tripJson, city);
+    const destination = inferRouteDestinationFromQuestion(question, city);
+    if (hotel && destination) {
+      recovered.push({
+        type: "route",
+        priority: recovered.length + 1,
+        confidence: 0.65,
+        scope: "specific_item",
+        city,
+        date_reference: inferDateReferenceFromQuestion(question),
+        tool_needed: "route",
+        route_direction: "hotel_to_place",
+        route_mode: "all",
+        airport_code: null,
+        place_name: destination.split(",")[0]?.trim() || destination,
+        origin_query: [hotel.name, hotel.address, hotel.city].filter(Boolean).join(", "),
+        destination_query: destination,
+        recommendation_type: null,
+        recommendation_query: null,
+        price_preference: null,
+        location_context: "trip_context",
+        wiki_needed: false,
+        wiki_query: null,
+        needs_clarification: false,
+        clarification_question: null
+      });
+    }
+  }
+
+  return mergeRecoveredTasks(tasks, recovered);
+}
+
+function getPlanTasks(analysis) {
+  return Array.isArray(analysis?.tasks) && analysis.tasks.length
+    ? analysis.tasks.slice().sort((a, b) => (a.priority || 99) - (b.priority || 99))
+    : [];
+}
+
+function findTask(tasks, predicate) {
+  return Array.isArray(tasks) ? tasks.find(predicate) || null : null;
+}
+
+function buildAnalysisForTask(baseAnalysis, task, question, tripId, localDate, userLocation = null) {
+  if (!task) return null;
+  const intent = mapTaskTypeToIntent(task.type);
+  return {
+    ...baseAnalysis,
+    ...task,
+    intent,
+    tool_needed:
+      task.tool_needed && task.tool_needed !== "none"
+        ? task.tool_needed
+        : (
+            task.type === "route" ? "route"
+            : task.type === "recommendation" ? "places"
+            : task.type === "weather" ? "weather"
+            : task.type === "wiki" ? "wiki"
+            : "none"
+          ),
+    trip_id: tripId,
+    original_question: question,
+    local_date: localDate,
+    user_location: userLocation
+  };
+}
+
+function syncPrimaryTaskToAnalysis(analysis, tasks) {
+  const primaryTask = Array.isArray(tasks) && tasks.length ? tasks[0] : null;
+  if (!primaryTask) return analysis;
+
+  return {
+    ...analysis,
+    tasks,
+    intent: mapTaskTypeToIntent(primaryTask.type),
+    scope: primaryTask.scope || analysis.scope || "all",
+    city: primaryTask.city || null,
+    date_reference: primaryTask.date_reference || null,
+    tool_needed:
+      primaryTask.tool_needed && primaryTask.tool_needed !== "none"
+        ? primaryTask.tool_needed
+        : (
+            primaryTask.type === "route" ? "route"
+            : primaryTask.type === "recommendation" ? "places"
+            : primaryTask.type === "weather" ? "weather"
+            : primaryTask.type === "wiki" ? "wiki"
+            : "none"
+          ),
+    route_direction: primaryTask.route_direction || "unknown",
+    route_mode: primaryTask.route_mode || "all",
+    airport_code: primaryTask.airport_code || null,
+    place_name: primaryTask.place_name || null,
+    origin_query: primaryTask.origin_query || null,
+    destination_query: primaryTask.destination_query || null,
+    recommendation_type: primaryTask.recommendation_type || null,
+    recommendation_query: primaryTask.recommendation_query || null,
+    price_preference: primaryTask.price_preference || null,
+    location_context: primaryTask.location_context || "trip_context",
+    wiki_needed: Boolean(primaryTask.wiki_needed || primaryTask.type === "wiki"),
+    wiki_query: primaryTask.wiki_query || null,
+    confidence: primaryTask.confidence ?? analysis.confidence ?? 0,
+    primary_task_type: primaryTask.type,
+    is_multi_intent: tasks.length > 1
+  };
+}
+
+function shouldIncludeFullTripJson(tasks) {
+  return (tasks || []).some(task =>
+    task &&
+    (
+      task.type === "route" ||
+      task.type === "trip_planning"
+    )
+  );
+}
+
+function summarizeTasksForPrompt(tasks) {
+  return (tasks || []).map(task => ({
+    type: task.type,
+    priority: task.priority,
+    confidence: task.confidence,
+    city: task.city,
+    date_reference: task.date_reference,
+    route_direction: task.route_direction,
+    route_mode: task.route_mode,
+    place_name: task.place_name,
+    location_context: task.location_context,
+    recommendation_type: task.recommendation_type,
+    recommendation_query: task.recommendation_query,
+    wiki_query: task.wiki_query,
+    scope: task.scope
+  }));
+}
+
+function buildTaskContexts(tripJson, tasks, timeZone) {
+  return (tasks || []).map(task => ({
+    type: task.type,
+    priority: task.priority,
+    context: buildContextByIntent(tripJson, {
+      intent: mapTaskTypeToIntent(task.type),
+      scope: task.scope || "all",
+      city: task.city || null,
+      date_reference: task.date_reference || null
+    }, timeZone)
+  }));
+}
+
+function shouldEnableWriterThinking(tasks, hasPlanningSignal) {
+  const taskList = tasks || [];
+  if (taskList.length > 1) return true;
+  if (hasPlanningSignal) return true;
+  return taskList.some(task =>
+    task &&
+    (
+      task.type === "recommendation" ||
+      task.type === "route" ||
+      task.type === "wiki" ||
+      task.type === "trip_planning"
+    )
+  );
+}
+
 function buildChatSystemPrompt(options = {}) {
   const {
     includePlanningRules = false,
     includeRecommendationRules = false,
     includeWeatherRules = false,
     includeWikiRules = false,
-    includeRouteRules = false
+    includeRouteRules = false,
+    multiTask = false
   } = options;
 
   const sections = [];
@@ -748,6 +1089,15 @@ URLs (regla estricta):
 - Copia URLs completas EXACTAS desde los datos, incluyendo "https://".
 - No acortes, no cambies dominio, no uses placeholders como [link] o (enlace).
 `);
+
+  if (multiTask) {
+    sections.push(`
+Preguntas compuestas:
+- Si el plan trae múltiples tareas, responde en el mismo orden de prioridad.
+- Agrupa la respuesta por bloques naturales, sin sonar mecánico.
+- No ignores ninguna tarea resuelta; integra todo en una sola respuesta fluida.
+`);
+  }
 
   if (includePlanningRules) {
     sections.push(`
@@ -854,41 +1204,82 @@ async function processChatRequest(body, env) {
       conversationHistory
     );
     const classifierMs = Date.now() - classifierStart;
+    let tasks = getPlanTasks(analysis);
     const carryRecommendationContext = shouldCarryRecommendationContext(question, conversationHistory);
     const previousUserQuestion = getLastConversationMessage(conversationHistory, "user");
 
     if (carryRecommendationContext) {
-      if (
-        analysis.intent === "clarification" ||
-        analysis.intent === "general" ||
-        analysis.needs_clarification
-      ) {
-        analysis.intent = "recommendation";
-        analysis.scope = analysis.scope === "unknown" ? "specific_item" : (analysis.scope || "specific_item");
-        analysis.tool_needed = "places";
-        analysis.needs_clarification = false;
-        analysis.clarification_question = null;
+      let recommendationTask = findTask(tasks, task => task.type === "recommendation");
+
+      if (!recommendationTask) {
+        recommendationTask = {
+          type: "recommendation",
+          priority: 1,
+          confidence: analysis.confidence || 0.65,
+          scope: analysis.scope === "unknown" ? "specific_item" : (analysis.scope || "specific_item"),
+          city: analysis.city || null,
+          date_reference: analysis.date_reference || null,
+          tool_needed: "places",
+          route_direction: "unknown",
+          route_mode: "all",
+          airport_code: null,
+          place_name: analysis.place_name || null,
+          origin_query: null,
+          destination_query: null,
+          recommendation_type: null,
+          recommendation_query: null,
+          price_preference: null,
+          location_context: "trip_context",
+          wiki_needed: false,
+          wiki_query: null,
+          needs_clarification: false,
+          clarification_question: null
+        };
+        tasks = [recommendationTask, ...tasks].slice(0, 3);
       }
 
       if (userLocationIsPrecise) {
-        analysis.location_context = "current_user_area";
+        recommendationTask.location_context = "current_user_area";
       }
 
-      if (!analysis.recommendation_type) {
-        analysis.recommendation_type = inferFollowupRecommendationType(question, previousUserQuestion);
+      if (!recommendationTask.recommendation_type) {
+        recommendationTask.recommendation_type = inferFollowupRecommendationType(question, previousUserQuestion);
       }
 
-      if (!analysis.recommendation_query) {
-        analysis.recommendation_query = buildFallbackRecommendationQuery(
-          analysis.recommendation_type,
-          analysis.city,
+      if (!recommendationTask.recommendation_query) {
+        recommendationTask.recommendation_query = buildFallbackRecommendationQuery(
+          recommendationTask.recommendation_type,
+          recommendationTask.city,
           question,
           previousUserQuestion
         );
       }
+
+      recommendationTask.tool_needed = "places";
+      recommendationTask.needs_clarification = false;
+      recommendationTask.clarification_question = null;
+      tasks = tasks
+        .sort((a, b) => (a.priority || 99) - (b.priority || 99))
+        .slice(0, 3);
     }
 
-    const gpsRecommendedByAi = shouldRequestGpsForRecommendation(analysis, question);
+    tasks = recoverTasksFromQuestion(question, tripJson, analysis, tasks);
+
+    analysis = syncPrimaryTaskToAnalysis(analysis, tasks);
+    const recommendationTask = findTask(tasks, task => task.type === "recommendation");
+    const routeTask = findTask(tasks, task => task.type === "route");
+    const weatherTask = findTask(tasks, task => task.type === "weather");
+    const wikiTask = findTask(tasks, task => task.type === "wiki" || task.wiki_needed || task.tool_needed === "wiki");
+
+    const gpsRecommendedByAi = recommendationTask
+      ? shouldRequestGpsForRecommendation(
+          {
+            intent: "recommendation",
+            location_context: recommendationTask.location_context
+          },
+          question
+        )
+      : false;
 
     if (gpsRecommendedByAi && !userLocationIsPrecise && !locationRequestTriggered && !locationRetry) {
       await saveChatLog(env, {
@@ -979,6 +1370,7 @@ async function processChatRequest(body, env) {
     const intent = analysis.intent || "general";
     const conflicts = detectBasicConflicts(tripJson);
     context.detected_conflicts = conflicts;
+    const taskContexts = buildTaskContexts(tripJson, tasks, timeZone);
 
     let transportInfo = null;
     let transportUsed = false;
@@ -986,17 +1378,19 @@ async function processChatRequest(body, env) {
     let routeMs = null;
 
     try {
-      const routeStart = Date.now();
-      transportInfo = await enrichWithTransportInfo(
-        tripJson,
-        { ...analysis, trip_id: tripId, original_question: question, local_date: localDate },
-        env
-      );
-      routeMs = Date.now() - routeStart;
+      if (routeTask) {
+        const routeStart = Date.now();
+        transportInfo = await enrichWithTransportInfo(
+          tripJson,
+          buildAnalysisForTask(analysis, routeTask, question, tripId, localDate, userLocation),
+          env
+        );
+        routeMs = Date.now() - routeStart;
 
-      if (transportInfo) {
-        context.transport_info = transportInfo;
-        transportUsed = transportInfo.type === "calculated_route";
+        if (transportInfo) {
+          context.transport_info = transportInfo;
+          transportUsed = transportInfo.type === "calculated_route";
+        }
       }
     } catch (e) {
       transportUsed = false;
@@ -1010,15 +1404,13 @@ async function processChatRequest(body, env) {
     let recommendationsMs = null;
     let weatherMs = null;
     let wikiMs = null;
-    const wikiRequested = shouldUseWikipedia(analysis, question);
+    const isRecommendationIntent = Boolean(recommendationTask);
 
-    const isRecommendationIntent = intent === "recommendation" || intent === "nearby_places";
-
-    if (isRecommendationIntent && analysis.recommendation_query) {
+    if (recommendationTask && recommendationTask.recommendation_query) {
       try {
         const recStart = Date.now();
         recommendationsInfo = await searchPlacesRecommendations(
-          { ...analysis, trip_id: tripId, localDate, original_question: question, user_location: userLocation },
+          buildAnalysisForTask(analysis, recommendationTask, question, tripId, localDate, userLocation),
           tripJson,
           env
         );
@@ -1027,28 +1419,32 @@ async function processChatRequest(body, env) {
           context.recommendations_results = recommendationsInfo.places;
           context.recommendations_operational = recommendationsInfo.operational_validation || null;
           recommendationsUsed = true;
+          if (recommendationsInfo?.operational_validation?.location_source === "user_location" && recommendationTask) {
+            recommendationTask.location_context = "current_user_area";
+            analysis.location_context = "current_user_area";
+          }
         }
       } catch (e) {
         recommendationsInfo = { places: [], error: String(e) };
       }
     }
 
-    if (intent === "weather" || analysis.tool_needed === "weather" || isRecommendationIntent) {
+    if (weatherTask) {
       const weatherStart = Date.now();
       weatherInfo = await enrichWithWeatherInfo(
         tripJson,
-        { ...analysis, trip_id: tripId, original_question: question },
+        buildAnalysisForTask(analysis, weatherTask, question, tripId, localDate, userLocation),
         env
       );
       weatherMs = Date.now() - weatherStart;
       if (weatherInfo) context.weather_info = weatherInfo;
     }
 
-    if (wikiRequested) {
+    if (wikiTask) {
       try {
         const wikiStart = Date.now();
         wikiInfo = await fetchWikipediaContext(
-          { ...analysis, trip_id: tripId, original_question: question },
+          buildAnalysisForTask(analysis, wikiTask, question, tripId, localDate, userLocation),
           tripJson,
           env
         );
@@ -1086,18 +1482,19 @@ async function processChatRequest(body, env) {
       analysis.scope === "trip_analysis" ||
       planningSignals.some(signal => questionNorm.includes(signal));
 
-    const needsThinking = isRecommendationIntent || wikiRequested || hasPlanningSignal;
-    const includeRouteRules = analysis.tool_needed === "route" || intent === "route" || Boolean(transportInfo);
+    const needsThinking = shouldEnableWriterThinking(tasks, hasPlanningSignal);
+    const includeRouteRules = Boolean(routeTask) || Boolean(transportInfo);
     const includeRecommendationRules = isRecommendationIntent;
-    const includeWeatherRules = intent === "weather" || analysis.tool_needed === "weather" || isRecommendationIntent;
-    const includeWikiRules = wikiRequested;
-    const includePlanningRules = hasPlanningSignal || isRecommendationIntent;
+    const includeWeatherRules = Boolean(weatherTask);
+    const includeWikiRules = Boolean(wikiTask);
+    const includePlanningRules = hasPlanningSignal || tasks.some(task => task.type === "trip_planning");
     const systemPrompt = buildChatSystemPrompt({
       includePlanningRules,
       includeRecommendationRules,
       includeWeatherRules,
       includeWikiRules,
-      includeRouteRules
+      includeRouteRules,
+      multiTask: tasks.length > 1
     });
 
     const cleanHistory = Array.isArray(conversationHistory)
@@ -1107,8 +1504,37 @@ async function processChatRequest(body, env) {
             (m.role === "user" || m.role === "assistant") &&
             typeof m.content === "string"
           )
-          .slice(-8)
+          .slice(-6)
       : [];
+
+    const writerPayload = {
+      plan: {
+        tasks: summarizeTasksForPrompt(tasks),
+        response_style: analysis.response_style || { address_mode: "singular", tone: "premium_warm" },
+        needs_clarification: analysis.needs_clarification,
+        clarification_question: analysis.clarification_question || null
+      },
+      time_zone: timeZone || "desconocida",
+      local_date: localDate || "desconocida",
+      primary_context: context,
+      task_contexts: taskContexts,
+      tools: {
+        transport_info: transportInfo,
+        recommendations_info: recommendationsInfo ? {
+          places: recommendationsInfo.places || [],
+          operational_validation: recommendationsInfo.operational_validation || null,
+          error: recommendationsInfo.error || null
+        } : null,
+        weather_info: weatherInfo,
+        wikipedia_info: wikiInfo
+      },
+      trip_summary: buildTripSummaryForClassifier(tripJson),
+      trip_timeline: buildTripTimelineForClassifier(tripJson)
+    };
+
+    if (shouldIncludeFullTripJson(tasks)) {
+      writerPayload.trip_json = tripJson;
+    }
 
     const llmStart = Date.now();
     const response = await fetch("https://api.deepseek.com/chat/completions", {
@@ -1121,7 +1547,7 @@ async function processChatRequest(body, env) {
         model: "deepseek-v4-flash",
         thinking: { type: needsThinking ? "enabled" : "disabled" },
         temperature: 0.3,
-        max_tokens: needsThinking ? 3000 : 1200,
+        max_tokens: needsThinking ? 2200 : 1000,
         messages: [
           {
             role: "system",
@@ -1131,15 +1557,13 @@ async function processChatRequest(body, env) {
           {
             role: "user",
             content:
-              "Análisis estructurado:\n" +
-              JSON.stringify(analysis) +
+              "Plan de tareas:\n" +
+              JSON.stringify(writerPayload.plan) +
               "\n\nZona horaria del cliente: " + (timeZone || "desconocida") +
               "\nFecha local del cliente: " + (localDate || "desconocida") +
-              "\\n\\nContexto filtrado del viaje:\\n" +
-              JSON.stringify(context) +
-              "\\n\\nJSON completo del viaje para verificar secuencia, fechas y traslados:\\n" +
-              JSON.stringify(tripJson) +
-              "\\n\\nPregunta actual del cliente:\\n" +
+              "\n\nContexto ejecutado y verificado:\n" +
+              JSON.stringify(writerPayload) +
+              "\n\nPregunta actual del cliente:\n" +
               question
           }
         ]
@@ -1160,10 +1584,13 @@ async function processChatRequest(body, env) {
 
     const answerRaw = data.choices?.[0]?.message?.content || "No pude responder.";
     const answer = normalizeWrappedUrls(
-      appendRecommendationLinks(answerRaw, recommendationsInfo?.places)
+      appendRouteLinks(
+        appendRecommendationLinks(answerRaw, recommendationsInfo?.places),
+        transportInfo
+      )
     );
 
-    const contextText = JSON.stringify(context);
+    const contextText = JSON.stringify(writerPayload);
     const approximateTokens = Math.ceil(contextText.length / 4);
 
     await saveChatLog(env, {
@@ -1175,6 +1602,8 @@ async function processChatRequest(body, env) {
       answer,
       context_characters: contextText.length,
       approximate_context_tokens: approximateTokens,
+      tasks_count: tasks.length,
+      tasks_types: tasks.map(task => task.type).join("|"),
       analysis_thinking_enabled: true,
       thinking_enabled: needsThinking,
       session_history_messages: cleanHistory.length,
@@ -1207,16 +1636,16 @@ async function processChatRequest(body, env) {
       geocode_origin_error: transportInfo?.geocode_origin_error || null,
       geocode_destination_error: transportInfo?.geocode_destination_error || null,
       recommendations_used: recommendationsUsed,
-      recommendations_query: analysis.recommendation_query || null,
+      recommendations_query: recommendationTask?.recommendation_query || analysis.recommendation_query || null,
       recommendations_count: recommendationsInfo?.places?.length ?? null,
       recommendations_bias_used: recommendationsInfo?.bias_used || false,
       recommendations_error: recommendationsInfo?.error || null,
       recommendations_operational_validated: recommendationsInfo?.places?.filter(p => p?.operational?.validated).length ?? null,
       recommendations_next_day_risk: recommendationsInfo?.operational_validation?.next_day_risk?.level || null,
       recommendations_location_source: recommendationsInfo?.operational_validation?.location_source || null,
-      location_context: analysis.location_context || null,
+      location_context: recommendationTask?.location_context || analysis.location_context || null,
       wiki_used: Boolean(wikiInfo?.found),
-      wiki_query: analysis.wiki_query || null,
+      wiki_query: wikiTask?.wiki_query || analysis.wiki_query || null,
       wiki_title: wikiInfo?.title || null,
       wiki_url: wikiInfo?.content_urls?.desktop || null,
       wiki_error: wikiInfo?.error || null,
@@ -1255,10 +1684,10 @@ async function processChatRequest(body, env) {
         : (isRecommendationIntent ? "none" : null),
       tool_weather_status: weatherInfo
         ? (weatherInfo.type === "weather_error" ? "error" : "ok")
-        : ((intent === "weather" || isRecommendationIntent) ? "none" : null),
+        : (weatherTask ? "none" : null),
       tool_wiki_status: wikiInfo
         ? (wikiInfo.found ? "ok" : (wikiInfo.error ? "error" : "empty"))
-        : (wikiRequested ? "none" : null),
+        : (wikiTask ? "none" : null),
       cache_route_hit: Boolean(transportInfo?.cache_hit),
       cache_recommendations_hit: Boolean(recommendationsInfo?.cache_hit),
       cache_weather_hit: Boolean(weatherInfo?.cache_hit),
@@ -2305,6 +2734,8 @@ export default {
         lines.push(`Intent: ${log.intent || ""}`);
         lines.push(`Scope: ${log.scope || ""}`);
         lines.push(`City: ${log.city || ""}`);
+        lines.push(`Tasks count: ${log.tasks_count ?? ""}`);
+        lines.push(`Tasks types: ${log.tasks_types || ""}`);
         lines.push(`Pregunta: ${log.question || ""}`);
         lines.push(`Respuesta: ${log.answer || ""}`);
         lines.push(`Route status: ${log.tool_route_status || ""}`);
@@ -2353,6 +2784,7 @@ export default {
 
       const headers = [
         "created_at", "trip_id", "intent", "scope", "city",
+        "tasks_count", "tasks_types",
         "question", "answer",
         "tool_route_status", "tool_recommendations_status", "tool_weather_status", "tool_wiki_status",
         "wiki_used", "wiki_query", "wiki_title", "wiki_url", "wiki_error",
@@ -2369,6 +2801,7 @@ export default {
       for (const log of logs) {
         const row = [
           log.created_at, log.trip_id, log.intent, log.scope, log.city,
+          log.tasks_count, log.tasks_types,
           log.question, log.answer,
           log.tool_route_status, log.tool_recommendations_status, log.tool_weather_status, log.tool_wiki_status,
           log.wiki_used, log.wiki_query, log.wiki_title, log.wiki_url, log.wiki_error,

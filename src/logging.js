@@ -13,6 +13,8 @@ export async function saveChatLog(env, log) {
       answer: log.answer || "",
       context_characters: log.context_characters || 0,
       approximate_context_tokens: log.approximate_context_tokens || 0,
+      tasks_count: log.tasks_count ?? null,
+      tasks_types: log.tasks_types || null,
       analysis_thinking_enabled: log.analysis_thinking_enabled || false,
       thinking_enabled: log.thinking_enabled || false,
       session_history_messages: log.session_history_messages || 0,
