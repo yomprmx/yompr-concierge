@@ -134,9 +134,27 @@ function parseHourItem(item) {
   };
 }
 
-function buildSoftRecommendationWindows(hourly) {
+function getHourForTimeInZone(isoTime, timeZone = "UTC") {
+  if (!isoTime) return null;
+  const parsed = new Date(isoTime);
+  if (Number.isNaN(parsed.getTime())) return null;
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "2-digit",
+    hour12: false
+  });
+  const hour = Number(formatter.format(parsed));
+  return Number.isFinite(hour) ? hour : null;
+}
+
+function buildSoftRecommendationWindows(hourly, timeZone = "UTC") {
   if (!Array.isArray(hourly) || !hourly.length) return [];
-  const candidates = hourly
+  const daytimeHours = hourly.filter(h => {
+    const hour = getHourForTimeInZone(h?.time, timeZone);
+    return Number.isFinite(hour) && hour >= 7 && hour <= 22;
+  });
+  const source = daytimeHours.length ? daytimeHours : hourly;
+  const candidates = source
     .filter(h => h && typeof h.precipitation_probability_percent === "number")
     .sort((a, b) => (a.precipitation_probability_percent - b.precipitation_probability_percent) || ((a.temperature_c ?? 99) - (b.temperature_c ?? 99)))
     .slice(0, 3)
@@ -233,7 +251,10 @@ export async function enrichWithWeatherInfo(tripJson, analysis, env = null) {
     const forecastHours = Array.isArray(hourlyData?.forecastHours)
       ? hourlyData.forecastHours.map(parseHourItem).filter(Boolean)
       : [];
-    const recommendationWindows = buildSoftRecommendationWindows(forecastHours);
+    const recommendationWindows = buildSoftRecommendationWindows(
+      forecastHours,
+      currentData?.timeZone?.id || forecastData?.timeZone?.id || hourlyData?.timeZone?.id || "UTC"
+    );
 
     const payload = {
       type: "weather_bundle",

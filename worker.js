@@ -1,4 +1,4 @@
-import { escapeHtml, normalizeText } from "./src/utils.js";
+import { addDaysToLocalDateOnly, escapeHtml, formatLocalDateEs, normalizeText } from "./src/utils.js";
 import { buildContextByIntent, buildTripSummaryForClassifier, buildTripTimelineForClassifier, detectBasicConflicts } from "./src/trip.js";
 import { classifyIntentHybrid, mapTaskTypeToIntent } from "./src/classifier.js";
 import { enrichWithTransportInfo } from "./src/routing.js";
@@ -1052,6 +1052,45 @@ function buildTaskContexts(tripJson, tasks, timeZone) {
   }));
 }
 
+function resolveTaskTargetLocalDate(localDate, task) {
+  const ref = normalizeText(task?.date_reference || "");
+  if (!localDate) return null;
+  if (ref === "hoy") return localDate;
+  if (ref === "manana" || ref === "mañana") return addDaysToLocalDateOnly(localDate, 1);
+  const explicitIso = String(task?.date_reference || "").match(/^\d{4}-\d{2}-\d{2}/)?.[0];
+  if (explicitIso) return explicitIso;
+  return null;
+}
+
+function buildTemporalContext(localDate, tasks, transportInfo) {
+  const today = formatLocalDateEs(localDate || "");
+  const tomorrow = formatLocalDateEs(addDaysToLocalDateOnly(localDate || "", 1) || "");
+  const primaryTask = Array.isArray(tasks) && tasks.length ? tasks[0] : null;
+  const targetIso = resolveTaskTargetLocalDate(localDate, primaryTask);
+  const target = formatLocalDateEs(targetIso || "");
+
+  return {
+    client_today: today,
+    client_tomorrow: tomorrow,
+    question_target_date: target || null,
+    route_guidance: transportInfo?.route_time_basis === "planning_daytime"
+      ? "Las duraciones de ruta son una simulación estándar de planeación diurna. No deben redactarse como una hora exacta de salida real del cliente."
+      : (transportInfo?.route_time_basis === "realtime_now"
+          ? "Las duraciones de ruta corresponden a condiciones del momento de consulta."
+          : null)
+  };
+}
+
+function buildTransportInfoForWriter(transportInfo) {
+  if (!transportInfo) return null;
+  const safe = JSON.parse(JSON.stringify(transportInfo));
+  if (safe.route_time_basis === "planning_daytime") {
+    delete safe.route_departure_time;
+    safe.route_departure_label = "simulación de planeación diurna";
+  }
+  return safe;
+}
+
 function shouldEnableWriterThinking(tasks, hasPlanningSignal) {
   const taskList = tasks || [];
   if (taskList.length > 1) return true;
@@ -1145,6 +1184,7 @@ Clima:
 - Si context.weather_info existe, úsalo como fuente prioritaria.
 - "hoy/ahora": current. "mañana": forecast_days[1]. Semana: resumen compacto.
 - Si hay forecast_hours, sugiere ventanas horarias favorables de forma informativa.
+- Evita recomendar horas de madrugada salvo que el cliente las pida explícitamente o sean realmente relevantes para un vuelo o traslado.
 - Tono no imperativo: sugiere, no ordenes.
 - Si weather_error, dilo breve y propone reintento con zona más específica.
 `);
@@ -1166,12 +1206,22 @@ Rutas:
 - Si transport_info.type="calculated_route", usa SOLO transport_info para tiempos/distancias.
 - No inventes tiempos ni distancias fuera de transport_info.
 - Explica route_time_basis: planning_daytime vs realtime_now cuando aplique.
+- Si transport_info.route_time_basis="planning_daytime", descríbelo como una estimación de planeación futura en horario diurno.
+- Si transport_info.route_time_basis="planning_daytime", no conviertas esa simulación en una hora exacta de salida del cliente.
+- No escribas frases como "si sales a las 9:45" o similares, a menos que el itinerario o la herramienta indiquen explícitamente esa hora real.
 - Compara opciones disponibles (walking/driving/transit) solo si existen.
 - Si transit.steps existe, úsalo para guía paso a paso.
 - Si falta origen/destino o hay geocoding/route error, dilo y pide precisión o comparte maps_link.
 - Respeta origin_query/destination_query del análisis y la secuencia del itinerario.
 `);
   }
+
+  sections.push(`
+Fechas y horarios (regla estricta):
+- Si temporal_context existe, úsalo como única referencia válida para "hoy", "mañana", día de la semana y fecha.
+- No recalcules manualmente el día de la semana.
+- Si temporal_context.question_target_date existe, úsalo textualmente cuando menciones la fecha objetivo.
+`);
 
   sections.push(`
 Límites del rol (obligatorio):
@@ -1453,6 +1503,8 @@ async function processChatRequest(body, env) {
       if (weatherInfo) context.weather_info = weatherInfo;
     }
 
+    const temporalContext = buildTemporalContext(localDate, tasks, transportInfo);
+
     if (wikiTask) {
       try {
         const wikiStart = Date.now();
@@ -1531,8 +1583,9 @@ async function processChatRequest(body, env) {
       local_date: localDate || "desconocida",
       primary_context: context,
       task_contexts: taskContexts,
+      temporal_context: temporalContext,
       tools: {
-        transport_info: transportInfo,
+        transport_info: buildTransportInfoForWriter(transportInfo),
         recommendations_info: recommendationsInfo ? {
           places: recommendationsInfo.places || [],
           operational_validation: recommendationsInfo.operational_validation || null,
