@@ -1,5 +1,6 @@
 import { extractJsonObject } from "./utils.js";
 import { buildTripSummaryForClassifier, buildTripTimelineForClassifier } from "./trip.js";
+import { classifyIntentLocally } from "./router.js";
 
 function normalizePriority(value, fallback = 1) {
   const num = Number(value);
@@ -173,7 +174,11 @@ function buildPlanEnvelope(raw) {
         }
       : { address_mode: "singular", tone: "premium_warm" },
     needs_clarification: Boolean(raw.needs_clarification),
-    clarification_question: raw.clarification_question || null
+    clarification_question: raw.clarification_question || null,
+    planner_source: raw.planner_source || null,
+    planner_strategy: raw.planner_strategy || null,
+    planner_escalated: Boolean(raw.planner_escalated),
+    local_router_reason: raw.local_router_reason || null
   };
 }
 
@@ -216,8 +221,55 @@ export function postProcessAnalysis(analysis) {
     tasks: plan.tasks,
     response_style: plan.response_style,
     is_multi_intent: plan.tasks.length > 1,
-    primary_task_type: primary.type
+    primary_task_type: primary.type,
+    planner_source: plan.planner_source || null,
+    planner_strategy: plan.planner_strategy || null,
+    planner_escalated: Boolean(plan.planner_escalated),
+    local_router_reason: plan.local_router_reason || null
   };
+}
+
+function hasSpecificTasks(tasks = []) {
+  return tasks.some(task => task && task.type && task.type !== "general");
+}
+
+function mergeLocalFallback(localPlan, deepPlan) {
+  const deepHasSpecific = hasSpecificTasks(deepPlan?.tasks || []);
+  if (deepHasSpecific || !hasSpecificTasks(localPlan?.tasks || [])) {
+    return {
+      ...deepPlan,
+      planner_source: "deepseek",
+      planner_strategy: "deepseek",
+      planner_escalated: true,
+      local_router_reason: localPlan?.escalation_reason || null
+    };
+  }
+
+  return {
+    ...localPlan,
+    response_style: deepPlan?.response_style || localPlan.response_style,
+    planner_source: "local_rule",
+    planner_strategy: "deepseek_with_local_recovery",
+    planner_escalated: true,
+    local_router_reason: localPlan?.escalation_reason || null
+  };
+}
+
+export async function classifyIntentHybrid(question, env, tripJson, conversationHistory = []) {
+  const localPlan = classifyIntentLocally(question, tripJson, conversationHistory);
+
+  if (!localPlan.should_escalate) {
+    return postProcessAnalysis({
+      ...localPlan,
+      planner_source: "local_rule",
+      planner_strategy: "local_only",
+      planner_escalated: false,
+      local_router_reason: null
+    });
+  }
+
+  const deepPlan = await classifyIntentWithDeepSeek(question, env, tripJson, conversationHistory);
+  return mergeLocalFallback(localPlan, deepPlan);
 }
 
 export async function classifyIntentWithDeepSeek(question, env, tripJson, conversationHistory = []) {
@@ -347,12 +399,22 @@ Reglas:
   const content = data.choices?.[0]?.message?.content || "{}";
   const parsed = extractJsonObject(content);
 
-  if (parsed) return postProcessAnalysis(parsed);
+  if (parsed) {
+    return postProcessAnalysis({
+      ...parsed,
+      planner_source: "deepseek",
+      planner_strategy: "deepseek",
+      planner_escalated: true
+    });
+  }
 
   return postProcessAnalysis({
     tasks: [defaultTask()],
     response_style: { address_mode: "singular", tone: "premium_warm" },
     needs_clarification: false,
-    clarification_question: null
+    clarification_question: null,
+    planner_source: "deepseek",
+    planner_strategy: "deepseek_fallback_general",
+    planner_escalated: true
   });
 }

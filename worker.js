@@ -1,6 +1,6 @@
 import { escapeHtml, normalizeText } from "./src/utils.js";
 import { buildContextByIntent, buildTripSummaryForClassifier, buildTripTimelineForClassifier, detectBasicConflicts } from "./src/trip.js";
-import { classifyIntentWithDeepSeek, mapTaskTypeToIntent } from "./src/classifier.js";
+import { classifyIntentHybrid, mapTaskTypeToIntent } from "./src/classifier.js";
 import { enrichWithTransportInfo } from "./src/routing.js";
 import { searchPlacesRecommendations } from "./src/recommendations.js";
 import { enrichWithWeatherInfo } from "./src/weather.js";
@@ -1005,6 +1005,22 @@ function shouldIncludeFullTripJson(tasks) {
   );
 }
 
+function shouldIncludeTripTimelineForWriter(tasks) {
+  const taskList = tasks || [];
+  if (taskList.length > 1) return true;
+  return taskList.some(task =>
+    task &&
+    (
+      task.type === "route" ||
+      task.type === "trip_planning" ||
+      task.type === "flight_lookup" ||
+      task.type === "hotel_lookup" ||
+      task.type === "activity_lookup" ||
+      task.type === "transfer_lookup"
+    )
+  );
+}
+
 function summarizeTasksForPrompt(tasks) {
   return (tasks || []).map(task => ({
     type: task.type,
@@ -1043,9 +1059,6 @@ function shouldEnableWriterThinking(tasks, hasPlanningSignal) {
   return taskList.some(task =>
     task &&
     (
-      task.type === "recommendation" ||
-      task.type === "route" ||
-      task.type === "wiki" ||
       task.type === "trip_planning"
     )
   );
@@ -1197,7 +1210,7 @@ async function processChatRequest(body, env) {
 
     const classifierStart = Date.now();
     const classifierQuestion = buildClassifierQuestion(question, conversationHistory);
-    let analysis = await classifyIntentWithDeepSeek(
+    let analysis = await classifyIntentHybrid(
       classifierQuestion,
       env,
       tripJson,
@@ -1528,9 +1541,12 @@ async function processChatRequest(body, env) {
         weather_info: weatherInfo,
         wikipedia_info: wikiInfo
       },
-      trip_summary: buildTripSummaryForClassifier(tripJson),
-      trip_timeline: buildTripTimelineForClassifier(tripJson)
+      trip_summary: buildTripSummaryForClassifier(tripJson)
     };
+
+    if (shouldIncludeTripTimelineForWriter(tasks)) {
+      writerPayload.trip_timeline = buildTripTimelineForClassifier(tripJson);
+    }
 
     if (shouldIncludeFullTripJson(tasks)) {
       writerPayload.trip_json = tripJson;
@@ -1604,9 +1620,13 @@ async function processChatRequest(body, env) {
       approximate_context_tokens: approximateTokens,
       tasks_count: tasks.length,
       tasks_types: tasks.map(task => task.type).join("|"),
-      analysis_thinking_enabled: true,
+      analysis_thinking_enabled: analysis.planner_source === "deepseek",
       thinking_enabled: needsThinking,
       session_history_messages: cleanHistory.length,
+      planner_source: analysis.planner_source || null,
+      planner_strategy: analysis.planner_strategy || null,
+      planner_escalated: analysis.planner_escalated ?? null,
+      local_router_reason: analysis.local_router_reason || null,
       transport_used: transportUsed,
       transport_type: transportInfo?.type || null,
       transport_duration_min: transportInfo?.duration_min || null,
@@ -2738,6 +2758,10 @@ export default {
         lines.push(`Tasks types: ${log.tasks_types || ""}`);
         lines.push(`Pregunta: ${log.question || ""}`);
         lines.push(`Respuesta: ${log.answer || ""}`);
+        lines.push(`Planner source: ${log.planner_source || ""}`);
+        lines.push(`Planner strategy: ${log.planner_strategy || ""}`);
+        lines.push(`Planner escalated: ${log.planner_escalated === true ? "yes" : (log.planner_escalated === false ? "no" : "")}`);
+        lines.push(`Local router reason: ${log.local_router_reason || ""}`);
         lines.push(`Route status: ${log.tool_route_status || ""}`);
         lines.push(`Route time basis: ${log.route_time_basis || ""}`);
         lines.push(`Route departure time: ${log.route_departure_time || ""}`);
@@ -2785,6 +2809,7 @@ export default {
       const headers = [
         "created_at", "trip_id", "intent", "scope", "city",
         "tasks_count", "tasks_types",
+        "planner_source", "planner_strategy", "planner_escalated", "local_router_reason",
         "question", "answer",
         "tool_route_status", "tool_recommendations_status", "tool_weather_status", "tool_wiki_status",
         "wiki_used", "wiki_query", "wiki_title", "wiki_url", "wiki_error",
@@ -2802,6 +2827,7 @@ export default {
         const row = [
           log.created_at, log.trip_id, log.intent, log.scope, log.city,
           log.tasks_count, log.tasks_types,
+          log.planner_source, log.planner_strategy, log.planner_escalated, log.local_router_reason,
           log.question, log.answer,
           log.tool_route_status, log.tool_recommendations_status, log.tool_weather_status, log.tool_wiki_status,
           log.wiki_used, log.wiki_query, log.wiki_title, log.wiki_url, log.wiki_error,
