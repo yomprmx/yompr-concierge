@@ -735,6 +735,104 @@ function buildClassifierQuestion(question, conversationHistory) {
   return parts.join("\n");
 }
 
+function getRecentUserMessages(conversationHistory, limit = 3) {
+  if (!Array.isArray(conversationHistory)) return [];
+  return conversationHistory
+    .filter(item => item && item.role === "user" && typeof item.content === "string" && item.content.trim())
+    .slice(-limit)
+    .map(item => item.content.trim());
+}
+
+function detectSimpleTopicLabel(text) {
+  const q = normalizeText(text || "");
+  if (!q) return null;
+  if (q.includes("zoolog")) return "zoológico";
+  if (q.includes("ensalada")) return "ensaladas";
+  if (q.includes("sushi")) return "sushi";
+  if (q.includes("italian") || q.includes("italiana")) return "comida italiana";
+  if (q.includes("clima") || q.includes("lluv")) return "clima";
+  if (q.includes("puente")) return "puente";
+  if (q.includes("aeropuerto")) return "aeropuerto";
+  if (q.includes("hotel")) return "hotel";
+  if (q.includes("museo")) return "museo";
+  if (q.includes("cenar") || q.includes("comer") || q.includes("restaurante")) return "comida";
+  return null;
+}
+
+function hasExplicitFollowupTarget(question) {
+  const q = normalizeText(question || "");
+  if (!q) return false;
+  return (
+    q.includes("zoolog") ||
+    q.includes("ensalada") ||
+    q.includes("sushi") ||
+    q.includes("italian") ||
+    q.includes("puente") ||
+    q.includes("aeropuerto") ||
+    q.includes("hotel") ||
+    q.includes("museo") ||
+    q.includes("restaurante") ||
+    q.includes("comida")
+  );
+}
+
+function looksLikeAmbiguousPlanFollowup(question) {
+  const q = normalizeText(question || "").trim();
+  if (!q) return false;
+  return (
+    q.startsWith("si ") ||
+    q.startsWith("y si ") ||
+    q.startsWith("crees que ") ||
+    q.includes("no alcanzo a ir") ||
+    q.includes("pasado manana") ||
+    q.includes("pasado mañana") ||
+    q.includes("sea buena idea") ||
+    q.includes("conviene")
+  );
+}
+
+function buildAmbiguousFollowupClarification(question, conversationHistory) {
+  if (!looksLikeAmbiguousPlanFollowup(question)) return null;
+  if (hasExplicitFollowupTarget(question)) return null;
+
+  const recentTopics = getRecentUserMessages(conversationHistory, 4)
+    .map(detectSimpleTopicLabel)
+    .filter(Boolean);
+  const uniqueTopics = [...new Set(recentTopics)];
+
+  if (!uniqueTopics.length) {
+    return "Para ayudarte bien con ese seguimiento, dime a qué plan te refieres exactamente.";
+  }
+
+  if (uniqueTopics.length === 1) {
+    return `Para asegurarme de seguir el hilo correcto, ¿te refieres a ${uniqueTopics[0]}?`;
+  }
+
+  const options = uniqueTopics.slice(-2);
+  return `Quiero seguir el hilo correcto: ¿te refieres a ${options[0]} o a ${options[1]}?`;
+}
+
+function sanitizeRolePromises(text) {
+  let output = String(text || "");
+  output = output.replace(
+    /\b(solo\s+)?av[ií]same?\s+y\s+con\s+gusto\s+te\s+ayudo\s+a\s+reacomodar\s+el\s+itinerario\b/gi,
+    "si quieres, puedo ayudarte a evaluar opciones de horario, pero cualquier cambio debe gestionarse con tu agente de Yompr"
+  );
+  output = output.replace(
+    /\bte\s+ayudo\s+a\s+reacomodar\s+el\s+itinerario\b/gi,
+    "puedo ayudarte a evaluar opciones de horario"
+  );
+  output = output.replace(
+    /\bpuedo\s+reacomodar\s+el\s+itinerario\b/gi,
+    "puedo ayudarte a evaluar opciones de horario"
+  );
+  output = output.replace(
+    /\bpuedo\s+cambiar(?:te)?\s+la\s+reserva\b/gi,
+    "no puedo cambiar reservas; eso debe verlo tu agente de Yompr"
+  );
+  return output;
+}
+
 function inferFollowupRecommendationType(question, previousUserQuestion) {
   const q = normalizeText(`${previousUserQuestion || ""} ${question || ""}`);
   if (q.includes("cenar") || q.includes("dinner") || q.includes("comer") || q.includes("restaurant") || q.includes("restaurante")) {
@@ -1228,6 +1326,8 @@ Límites del rol (obligatorio):
 - Eres exclusivamente informativo.
 - No puedes reservar, contratar, cancelar, cobrar, cotizar en tiempo real ni gestionar pagos.
 - Si piden acciones transaccionales, redirige de forma cálida a su agente de Yompr.
+- Nunca digas que puedes reacomodar el itinerario, confirmar cambios, modificar reservas o gestionar ajustes operativos.
+- Sí puedes evaluar opciones, comparar escenarios y sugerir el mejor horario o alternativa.
 `);
 
   return sections.join("\n");
@@ -1257,6 +1357,32 @@ async function processChatRequest(body, env) {
     }
 
     const tripJson = JSON.parse(tripText);
+
+    const ambiguousFollowupClarification = buildAmbiguousFollowupClarification(question, conversationHistory);
+    if (ambiguousFollowupClarification) {
+      await saveChatLog(env, {
+        trip_id: tripId,
+        question,
+        intent: "clarification",
+        scope: "unknown",
+        city: null,
+        answer: ambiguousFollowupClarification,
+        analysis_thinking_enabled: false,
+        thinking_enabled: false,
+        session_history_messages: Array.isArray(conversationHistory) ? conversationHistory.length : 0,
+        planner_source: "local_guard",
+        planner_strategy: "ambiguous_followup_clarification",
+        planner_escalated: false,
+        local_router_reason: "ambiguous_followup"
+      });
+      return {
+        status: 200,
+        payload: {
+          answer: ambiguousFollowupClarification,
+          intent: "clarification"
+        }
+      };
+    }
 
     const classifierStart = Date.now();
     const classifierQuestion = buildClassifierQuestion(question, conversationHistory);
@@ -1651,7 +1777,7 @@ async function processChatRequest(body, env) {
       };
     }
 
-    const answerRaw = data.choices?.[0]?.message?.content || "No pude responder.";
+    const answerRaw = sanitizeRolePromises(data.choices?.[0]?.message?.content || "No pude responder.");
     const answer = normalizeWrappedUrls(
       appendRouteLinks(
         appendRecommendationLinks(answerRaw, recommendationsInfo?.places),
